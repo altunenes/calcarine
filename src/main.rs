@@ -838,19 +838,19 @@ impl ShaderManager for Calcarine {
                         
                         ui.separator();
                         
-                        egui::CollapsingHeader::new("🤖 PHI-3.5 Vision Analysis")
-                            .default_open(self.llm_enabled)
+                        egui::CollapsingHeader::new("🤖 AI Analysis Settings")
+                            .default_open(false)
                             .show(ui, |ui| {
                                 if self.analysis_sender.is_some() {
                                     ui.horizontal(|ui| {
                                         ui.checkbox(&mut self.llm_enabled, "Enable AI Analysis");
                                         let next_analysis_in = self.analysis_interval_seconds - self.last_analysis_time.elapsed().as_secs_f32();
                                         if self.llm_processing {
-                                            ui.label("🧠 AI Analysis in progress - please wait...");
+                                            ui.label("🧠 Processing...");
                                         } else if self.llm_enabled && next_analysis_in > 0.0 {
                                             ui.label(format!("Next in {:.1}s", next_analysis_in));
                                         } else if self.llm_enabled {
-                                            ui.label("🔄 Ready for next analysis...");
+                                            ui.label("🔄 Ready");
                                         }
                                     });
                                     
@@ -870,9 +870,25 @@ impl ShaderManager for Calcarine {
                                         ui.text_edit_singleline(&mut self.llm_prompt);
                                     });
                                     
+                                    ui.add_space(5.0);
+                                    if ui.button("🔍 Analyze Now").clicked() && self.llm_enabled && !self.llm_processing {
+                                        println!("🎯 Manual analysis triggered");
+                                        self.last_analysis_time = Instant::now() - std::time::Duration::from_secs(self.analysis_interval_seconds as u64);
+                                    }
+                                } else {
+                                    ui.heading("⚠️ PHI-3.5 Vision Unavailable");
+                                    ui.label("Models not found or failed to load");
+                                    ui.label("Expected location: data/3.5_v/tokenizer.json");
+                                    ui.add_space(5.0);
+                                    ui.label("🔄 Restart the app to retry initialization");
+                                }
+                            });
+                        
+                        if self.analysis_sender.is_some() {
+                            egui::CollapsingHeader::new("💬 AI Analysis Results")
+                                .default_open(self.last_analysis_result.is_some())
+                                .show(ui, |ui| {
                                     if let Some(analysis) = &self.last_analysis_result {
-                                        ui.separator();
-                                        ui.heading("🎯 Latest Analysis:");
                                         let elapsed = analysis.timestamp.elapsed();
                                         ui.label(format!("⏱️ {:.1}s ago • 🚀 Processed in {:.2}s", 
                                                        elapsed.as_secs_f32(), 
@@ -891,34 +907,16 @@ impl ShaderManager for Calcarine {
                                                 ).wrap());
                                             });
                                     } else if self.llm_enabled {
-                                        ui.separator();
                                         ui.horizontal(|ui| {
                                             ui.spinner();
                                             ui.label("⏳ Initializing AI analysis - this may take a moment...");
                                         });
                                         ui.label("Your analysis request is queued and will process shortly");
                                     } else {
-                                        ui.separator();
                                         ui.label("Analysis is disabled");
                                     }
-                                    
-                                    ui.add_space(5.0);
-                                    if ui.button("🔍 Analyze Now").clicked() && self.llm_enabled && !self.llm_processing {
-                                        println!("🎯 Manual analysis triggered");
-                                        self.last_analysis_time = Instant::now() - std::time::Duration::from_secs(self.analysis_interval_seconds as u64);
-                                    }
-                                } else {
-                                    ui.heading("⚠️ PHI-3.5 Vision Unavailable");
-                                    ui.label("Models not found or failed to load");
-                                    ui.label("Expected location: data/3.5_v/tokenizer.json");
-                                    ui.add_space(5.0);
-                                    ui.label("🔄 Restart the app to retry initialization");
-                                }
-                            });
-                        
-                        ui.separator();
-                        
-                        should_start_export = ExportManager::render_export_ui_widget(ui, &mut export_request);
+                                });
+                        }
                     });
             })
         } else {

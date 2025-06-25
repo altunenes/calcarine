@@ -83,27 +83,12 @@ impl Phi3Vision {
             .map_err(|e| anyhow::anyhow!("Error loading tokenizer: {:?}", e))?;
         
         let create_session = |model_path: &str| -> Result<Session> {
-            let mut builder = Session::builder()
+            let builder = Session::builder()
                 .map_err(|e| anyhow::anyhow!("Session builder error: {:?}", e))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Optimization level error: {:?}", e))?;
-
-            #[cfg(target_os = "macos")]
-            {
-                builder = builder.with_execution_providers([
-                    ort::execution_providers::CoreMLExecutionProvider::default().build(),
-                    CPUExecutionProvider::default().build(),
-                ])
+                .map_err(|e| anyhow::anyhow!("Optimization level error: {:?}", e))?
+                .with_execution_providers([CPUExecutionProvider::default().build()])
                 .map_err(|e| anyhow::anyhow!("Execution provider error: {:?}", e))?;
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                builder = builder.with_execution_providers([
-                    CPUExecutionProvider::default().build(),
-                ])
-                .map_err(|e| anyhow::anyhow!("Execution provider error: {:?}", e))?;
-            }
 
             Ok(builder.commit_from_file(data_dir.join(model_path))
                 .map_err(|e| anyhow::anyhow!("Model loading error: {:?}", e))?)
