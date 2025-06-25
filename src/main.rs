@@ -1,4 +1,4 @@
-use cuneus::{Core, ShaderManager, UniformProvider, UniformBinding, RenderKit, ShaderControls, ExportManager, ShaderHotReload};
+use cuneus::{Core, ShaderManager, UniformProvider, UniformBinding, RenderKit, ShaderControls, ShaderHotReload};
 use cuneus::compute::{ BindGroupLayoutType, create_bind_group_layout, create_external_texture_bind_group};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -760,8 +760,8 @@ impl ShaderManager for Calcarine {
         
         let mut params = self.params_uniform.data;
         let mut changed = false;
-        let mut should_start_export = false;
-        let mut export_request = self.base.export_manager.get_ui_request();
+        let should_start_export = false;
+        let export_request = self.base.export_manager.get_ui_request();
         let mut controls_request = self.base.controls.get_ui_request(
             &self.base.start_time,
             &core.size
@@ -861,9 +861,6 @@ impl ShaderManager for Calcarine {
                                         .text("Resolution Scale (lower = faster)")
                                         .show_value(true));
                                     
-                                    if self.llm_resolution_scale < 0.75 {
-                                        ui.label("💡 Using optimized settings for better performance");
-                                    }
                                     
                                     ui.horizontal(|ui| {
                                         ui.label("Custom Prompt:");
