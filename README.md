@@ -3,7 +3,9 @@
 **Real-time VLM analysis via GPU compute shaders**
 
 
-<img width="1260" alt="calcarine" src="https://github.com/user-attachments/assets/b0596266-882c-4231-97bd-5deb59e5f79e" />
+<div align="center">
+  <img width="600" alt="calcarine" src="https://github.com/user-attachments/assets/b0596266-882c-4231-97bd-5deb59e5f79e" />
+</div>
 
 
 Calcarine demonstrates real-time VLM analysis by passing visual content through GPU compute shaders to Microsoft's PHI-3.5 Vision model for intelligent scene understanding.
