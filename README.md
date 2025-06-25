@@ -15,12 +15,9 @@ Calcarine demonstrates real-time VLM analysis by passing visual content through 
 - **VLM analysis**: Real-time predictions using Microsoft PHI-3.5 Vision model (CPU) via ort
 - **Interactive controls**: Real-time parameter adjustment via egui
 
-## Quick Start
+## Installation
 
-1. **Install GStreamer** from [gstreamer.freedesktop.org](https://gstreamer.freedesktop.org/download/)
-2. **Extract and run** - AI models download automatically on first launch (~3.2 GB)
-3. **Press 'H'** to toggle the settings UI
-4. **Drag & drop** media files or enable webcam
+See [INSTALL.md](INSTALL.md) for detailed installation instructions.
 
 ## What You're Actually Using
 
@@ -31,7 +28,8 @@ Under the hood, Calcarine is powered by **Cuneus**. The real focus is passing te
 **Model**: [Microsoft PHI-3.5 Vision Instruct ONNX](https://huggingface.co/microsoft/Phi-3.5-vision-instruct-onnx/tree/main/cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4)
 - **Optimization**: CPU INT4 quantized for mobile/desktop efficiency
 - **Size**: ~3.2 GB (one-time download)
+- **Storage**: Models are downloaded to `~/data/3.5_v/` directory
 - **Performance**: Tested on MacBook Air M3 16GB - runs smoothly with no issues
 
-*Note: While GPU-optimized VLM models would be ideal, the current ONNX ecosystem has limited options. This CPU-optimized model provides an  balance of quality and performance for real-time analysis.*
+*Note: While GPU-optimized VLM models would be ideal, the current ONNX ecosystem has limited options. CPU execution was chosen to avoid the maintenance burden of supporting different execution providers (CUDA, DirectML, CoreML, etc.) across platforms. Even with CPU inference, the model delivers solid results for real-time analysis.*
 
