@@ -22,7 +22,7 @@ See [INSTALL.md](INSTALL.md) for detailed installation instructions.
 
 ## What You're Actually Using
 
-Under the hood, Calcarine is powered by **Cuneus**. The real focus is passing textures to GPU and having the VLM make real-time predictions and analysis. The simple image effects (brightness, contrast, etc.) are just examples of what compute shaders can do.
+Under the hood, Calcarine is powered by [**Cuneus**](https://github.com/altunenes/cuneus). The real focus is passing textures to GPU and having the VLM make real-time predictions and analysis. The simple image effects (brightness, contrast, etc.) are just examples of what compute shaders can do.
 
 ## AI Model Details
 
