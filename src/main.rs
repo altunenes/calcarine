@@ -1124,7 +1124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     {
         use std::ffi::CString;
-        extern "system" {
+        unsafe extern "system" {
             fn AllocConsole() -> i32;
             fn SetConsoleTitleA(title: *const i8) -> i32;
         }
@@ -1147,7 +1147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // On Windows, hide the console after downloads are complete
     #[cfg(target_os = "windows")]
     {
-        extern "system" {
+        unsafe extern "system" {
             fn FreeConsole() -> i32;
         }
         unsafe {
