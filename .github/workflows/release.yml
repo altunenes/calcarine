@@ -1,0 +1,303 @@
+name: Calcarine Binary Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: write-all
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+            archive_ext: ".tar.gz"
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+            archive_ext: ".zip"
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ""
+            archive_ext: ".tar.gz"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Install GStreamer for macOS
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          # Download and install official GStreamer packages
+          GSTREAMER_VERSION="1.26.0"
+          curl -L "https://gstreamer.freedesktop.org/data/pkg/osx/$GSTREAMER_VERSION/gstreamer-1.0-$GSTREAMER_VERSION-universal.pkg" -o gstreamer.pkg
+          curl -L "https://gstreamer.freedesktop.org/data/pkg/osx/$GSTREAMER_VERSION/gstreamer-1.0-devel-$GSTREAMER_VERSION-universal.pkg" -o gstreamer-devel.pkg
+          
+          sudo installer -pkg gstreamer.pkg -target /
+          sudo installer -pkg gstreamer-devel.pkg -target /
+          
+          # Set environment variables for build and runtime
+          echo "PKG_CONFIG_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/pkgconfig" >> $GITHUB_ENV
+          echo "GST_PLUGIN_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib/gstreamer-1.0" >> $GITHUB_ENV
+          echo "DYLD_FALLBACK_LIBRARY_PATH=/Library/Frameworks/GStreamer.framework/Versions/1.0/lib" >> $GITHUB_ENV
+
+      # Install GStreamer for Linux
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libudev-dev \
+            pkg-config \
+            build-essential \
+            libglib2.0-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly
+
+      # Install GStreamer for Windows
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Write-Host "Starting GStreamer installation process..."
+          $gstVer = "1.26.0"
+          $tempDir = "C:\gst-temp"
+          $installDir = "C:\gstreamer"
+          
+          # Create necessary directories
+          New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+          Write-Host "Downloading installers..."
+          $baseUrl = "https://gstreamer.freedesktop.org/data/pkg/windows/$gstVer/msvc"
+          $runtimeUrl = "$baseUrl/gstreamer-1.0-msvc-x86_64-$gstVer.msi"
+          $develUrl = "$baseUrl/gstreamer-1.0-devel-msvc-x86_64-$gstVer.msi"
+          
+          Write-Host "Downloading MSVC 64-bit runtime installer..."
+          Invoke-WebRequest -Uri $runtimeUrl -OutFile "$tempDir\gstreamer.msi"
+          
+          Write-Host "Downloading MSVC 64-bit development installer..."
+          Invoke-WebRequest -Uri $develUrl -OutFile "$tempDir\gstreamer-devel.msi"
+
+          Write-Host "Installing runtime package..."
+          $proc = Start-Process msiexec -ArgumentList "/i", "`"$tempDir\gstreamer.msi`"", "INSTALLDIR=$installDir", "/qn" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "Runtime installation failed with code: $($proc.ExitCode)"
+            exit 1
+          }
+
+          Write-Host "Installing development package..."
+          $proc = Start-Process msiexec -ArgumentList "/i", "`"$tempDir\gstreamer-devel.msi`"", "INSTALLDIR=$installDir", "/qn" -Wait -PassThru -NoNewWindow
+          if ($proc.ExitCode -ne 0) {
+            Write-Host "Development installation failed with code: $($proc.ExitCode)"
+            exit 1
+          }
+          
+          Write-Host "Looking for GStreamer installation..."
+          $expectedPath = "$installDir\1.0\msvc_x86_64"
+          $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+          while (-not (Test-Path $expectedPath)) {
+            if ($stopwatch.Elapsed.TotalSeconds -gt 60) {
+              Write-Host "Timeout waiting for installation directory. Current structure:"
+              Get-ChildItem -Path $installDir -Recurse | Format-List
+              exit 1
+            }
+            Start-Sleep -Seconds 5
+            Write-Host "Waiting for installation directory... ($([int]$stopwatch.Elapsed.TotalSeconds)s)"
+          }
+          
+          Write-Host "Setting environment variables..."
+          $env:GSTREAMER_1_0_ROOT_MSVC_X86_64 = $expectedPath
+          $env:GST_PLUGIN_PATH = "$expectedPath\lib\gstreamer-1.0"
+          $env:PKG_CONFIG_PATH = "$expectedPath\lib\pkgconfig"
+          $env:Path = "$expectedPath\bin;" + $env:Path
+          
+          # Set environment variables for subsequent steps
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$expectedPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "GST_PLUGIN_PATH=$expectedPath\lib\gstreamer-1.0" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PKG_CONFIG_PATH=$expectedPath\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "PATH=$expectedPath\bin;$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Build Calcarine
+      - name: Build Calcarine
+        shell: bash
+        run: |
+          echo "Building Calcarine for ${{ matrix.target }}"
+          cargo build --release
+
+      # Prepare release package
+      - name: Prepare release package
+        shell: bash
+        run: |
+          echo "Packaging Calcarine for ${{ matrix.target }}"
+          
+          # Create directory structure
+          mkdir -p "release/calcarine/shader"
+          
+          # Copy the binary
+          cp "target/release/calcarine${{ matrix.ext }}" "release/calcarine/"
+          
+          # Copy shader files
+          cp shader/*.wgsl "release/calcarine/shader/"
+          
+          # Copy README and LICENSE
+          if [ -f "README.md" ]; then
+            cp "README.md" "release/calcarine/"
+          fi
+          if [ -f "LICENSE" ]; then
+            cp "LICENSE" "release/calcarine/"
+          fi
+          
+          # Create installation README
+          cat > "release/calcarine/INSTALLATION.txt" << 'EOF'
+          Calcarine - Real-time Image Processing with AI Analysis
+          
+          REQUIREMENTS:
+          1. GStreamer 1.26.0 or later must be installed on your system
+             Download from: https://gstreamer.freedesktop.org/download/
+          
+          2. PHI-3.5 Vision models will be automatically downloaded on first run
+             Models are downloaded to: data/3.5_v/ directory
+             Total download size: ~3.2 GB (one-time download)
+          
+          3. The 'shader' directory must remain in the same folder as the executable
+          
+          INSTALLATION:
+          1. Extract this archive to your desired location
+          2. Install GStreamer if not already installed
+          3. Run the executable - models will download automatically
+          
+          FEATURES:
+          - Real-time GPU-accelerated image processing
+          - AI-powered image analysis using Microsoft PHI-3.5 Vision
+          - Support for images, videos, and webcam input
+          - Cross-platform: Windows, macOS, Linux
+          
+          CONTROLS:
+          - Press 'H' to toggle the settings UI
+          - Drag and drop media files to load them
+          - Use sliders to adjust image effects in real-time
+          - Configure AI analysis settings in the AI panel
+          
+          For more information, visit: https://github.com/altunenes/calcarine
+          EOF
+          
+          # Windows-specific: create .bat launcher
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cat > "release/calcarine/run_calcarine.bat" << 'EOF'
+          @echo off
+          echo Starting Calcarine...
+          echo.
+          echo First run will download AI models (~3.2 GB)
+          echo This may take several minutes depending on your internet connection.
+          echo.
+          if not exist shader mkdir shader
+          if not exist data mkdir data
+          calcarine.exe
+          pause
+          EOF
+          fi
+
+          # Create launcher script for Linux/MacOS
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            cat > "release/calcarine/run_calcarine.sh" << 'EOF'
+          #!/bin/bash
+          echo "Starting Calcarine..."
+          echo ""
+          echo "First run will download AI models (~3.2 GB)"
+          echo "This may take several minutes depending on your internet connection."
+          echo ""
+          mkdir -p shader data
+          ./calcarine
+          EOF
+            chmod +x "release/calcarine/run_calcarine.sh"
+          fi
+
+      # Create archive
+      - name: Create archive
+        shell: bash
+        run: |
+          cd release
+          echo "Creating archive for Calcarine ${{ matrix.target }}"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "../calcarine-${{ matrix.target }}${{ matrix.archive_ext }}" "calcarine"
+          else
+            tar -czf "../calcarine-${{ matrix.target }}${{ matrix.archive_ext }}" "calcarine"
+          fi
+
+      # Upload artifacts
+      - name: Upload artifacts to GitHub
+        uses: actions/upload-artifact@v4
+        with:
+          name: calcarine-${{ matrix.target }}
+          path: "calcarine-${{ matrix.target }}${{ matrix.archive_ext }}"
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: artifacts/**/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            ## Calcarine - Real-time Image Processing with AI Analysis
+            
+            This release includes cross-platform binaries for Windows, macOS, and Linux.
+            
+            ### 🎨 Features
+            - **Real-time GPU compute shaders** for image processing effects
+            - **AI-powered image analysis** using Microsoft PHI-3.5 Vision model
+            - **Multi-source input**: Images, videos, webcam feeds
+            - **Interactive UI** with real-time parameter adjustment
+            - **Cross-platform**: Windows, macOS, Linux
+            
+            ### 📦 Installation
+            1. Download the appropriate archive for your platform
+            2. Extract to your desired location
+            3. Install **GStreamer 1.26.0+** from https://gstreamer.freedesktop.org/download/
+            4. Run the executable - AI models will download automatically (~3.2 GB first time)
+            
+            ### 🚀 Quick Start
+            - Press **'H'** to toggle settings UI
+            - **Drag & drop** media files to load them
+            - Adjust **image effects** with real-time sliders
+            - Configure **AI analysis** in the dedicated panel
+            
+            ### 📋 System Requirements
+            - **GStreamer 1.26.0+** (required for media support)
+            - **~4 GB free space** (for AI models)
+            - **GPU with compute shader support**
+            - **Internet connection** (first run only, for model download)
+            
+            ### 🔧 Technical Details
+            - Built with Rust and WebGPU compute shaders
+            - Uses Microsoft PHI-3.5 Vision for CPU-optimized AI inference
+            - Cross-platform media handling via GStreamer
+            - Real-time performance with 60 FPS rendering
