@@ -1,0 +1,25 @@
+[package]
+name = "calcarine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Core dependencies
+cuneus = { version = "0.2.2", features = ["media"] }
+bytemuck = { version = "1", features = ["derive"] }
+
+# AI/ML dependencies
+ort = { version = "2.0.0-rc.10", features = ["coreml"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ndarray = "0.16"
+image = { version = "0.25", features = ["png", "jpeg", "webp"] }
+
+# Async and error handling
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+
+# Logging
+tracing = "0.1"
+env_logger = "0.11"
