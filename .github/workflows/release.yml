@@ -12,21 +12,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            ext: ""
-            archive_ext: ".tar.gz"
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            ext: ".exe"
-            archive_ext: ".zip"
+          # macOS with CoreML only
           - os: macos-latest
             target: x86_64-apple-darwin
             ext: ""
             archive_ext: ".tar.gz"
+            variant: "coreml"
+            variant_name: "CoreML"
+          
+          # Linux with CPU and CUDA support
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+            archive_ext: ".tar.gz"
+            variant: "cuda"
+            variant_name: "CUDA-CPU"
+            
+          # Windows with CPU and CUDA support  
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+            archive_ext: ".zip"
+            variant: "cuda"
+            variant_name: "CUDA-CPU"
 
     steps:
       - uses: actions/checkout@v4
@@ -139,34 +148,34 @@ jobs:
       - name: Build Calcarine
         shell: bash
         run: |
-          echo "Building Calcarine for ${{ matrix.target }}"
-          cargo build --release
+          echo "Building Calcarine for ${{ matrix.target }} with ${{ matrix.variant_name }} execution provider"
+          cargo build --release --target ${{ matrix.target }}
 
       # Prepare release package
       - name: Prepare release package
         shell: bash
         run: |
-          echo "Packaging Calcarine for ${{ matrix.target }}"
+          echo "Packaging Calcarine for ${{ matrix.target }} (${{ matrix.variant_name }})"
           
           # Create directory structure
-          mkdir -p "release/calcarine/shader"
+          mkdir -p "release/calcarine-${{ matrix.variant }}/shader"
           
           # Copy the binary
-          cp "target/release/calcarine${{ matrix.ext }}" "release/calcarine/"
+          cp "target/${{ matrix.target }}/release/calcarine${{ matrix.ext }}" "release/calcarine-${{ matrix.variant }}/"
           
           # Copy shader files
-          cp shader/*.wgsl "release/calcarine/shader/"
+          cp shader/*.wgsl "release/calcarine-${{ matrix.variant }}/shader/"
           
           # Copy README and LICENSE
           if [ -f "README.md" ]; then
-            cp "README.md" "release/calcarine/"
+            cp "README.md" "release/calcarine-${{ matrix.variant }}/"
           fi
           if [ -f "LICENSE" ]; then
-            cp "LICENSE" "release/calcarine/"
+            cp "LICENSE" "release/calcarine-${{ matrix.variant }}/"
           fi
           
           # Create installation README
-          cat > "release/calcarine/INSTALLATION.txt" << 'EOF'
+          cat > "release/calcarine-${{ matrix.variant }}/INSTALLATION.txt" << 'EOF'
           Calcarine - Real-time Image Processing with AI Analysis
           
           REQUIREMENTS:
@@ -174,10 +183,14 @@ jobs:
              Download from: https://gstreamer.freedesktop.org/download/
           
           2. FastVLM models will be automatically downloaded on first run
-             Models are downloaded to: data/fastvlm/ directory
+             Models are downloaded to system cache directory
              Total download size: ~1.4 GB (one-time download)
+             
+          3. Platform-specific AI acceleration:
+             - macOS: CoreML GPU acceleration
+             - Windows/Linux: CUDA GPU + CPU fallback
           
-          3. The 'shader' directory must remain in the same folder as the executable
+          4. The 'shader' directory must remain in the same folder as the executable
           
           INSTALLATION:
           1. Extract this archive to your desired location
@@ -201,7 +214,7 @@ jobs:
           
           # Windows-specific: create .bat launcher
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cat > "release/calcarine/run_calcarine.bat" << 'EOF'
+            cat > "release/calcarine-${{ matrix.variant }}/run_calcarine.bat" << 'EOF'
           @echo off
           echo Starting Calcarine...
           echo.
@@ -217,7 +230,7 @@ jobs:
 
           # Create launcher script for Linux/MacOS
           if [[ "${{ runner.os }}" != "Windows" ]]; then
-            cat > "release/calcarine/run_calcarine.sh" << 'EOF'
+            cat > "release/calcarine-${{ matrix.variant }}/run_calcarine.sh" << 'EOF'
           #!/bin/bash
           echo "Starting Calcarine..."
           echo ""
@@ -227,7 +240,7 @@ jobs:
           mkdir -p shader data
           ./calcarine
           EOF
-            chmod +x "release/calcarine/run_calcarine.sh"
+            chmod +x "release/calcarine-${{ matrix.variant }}/run_calcarine.sh"
           fi
 
       # Create archive
@@ -235,19 +248,19 @@ jobs:
         shell: bash
         run: |
           cd release
-          echo "Creating archive for Calcarine ${{ matrix.target }}"
+          echo "Creating archive for Calcarine ${{ matrix.target }} (${{ matrix.variant_name }})"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a "../calcarine-${{ matrix.target }}${{ matrix.archive_ext }}" "calcarine"
+            7z a "../calcarine-${{ matrix.target }}-${{ matrix.variant }}${{ matrix.archive_ext }}" "calcarine-${{ matrix.variant }}"
           else
-            tar -czf "../calcarine-${{ matrix.target }}${{ matrix.archive_ext }}" "calcarine"
+            tar -czf "../calcarine-${{ matrix.target }}-${{ matrix.variant }}${{ matrix.archive_ext }}" "calcarine-${{ matrix.variant }}"
           fi
 
       # Upload artifacts
       - name: Upload artifacts to GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: calcarine-${{ matrix.target }}
-          path: "calcarine-${{ matrix.target }}${{ matrix.archive_ext }}"
+          name: calcarine-${{ matrix.target }}-${{ matrix.variant }}
+          path: "calcarine-${{ matrix.target }}-${{ matrix.variant }}${{ matrix.archive_ext }}"
 
   release:
     needs: [build]
@@ -295,6 +308,11 @@ jobs:
             - **~2 GB free space** (for FastVLM models)
             - **GPU with compute shader support**
             - **Internet connection** (first run only, for model download)
+            
+            ### 📱 Platform-Specific Builds
+            - **macOS**: `calcarine-x86_64-apple-darwin-coreml.tar.gz` - CoreML GPU acceleration
+            - **Windows**: `calcarine-x86_64-pc-windows-msvc-cuda.zip` - CUDA GPU + CPU fallback  
+            - **Linux**: `calcarine-x86_64-unknown-linux-gnu-cuda.tar.gz` - CUDA GPU + CPU fallback
             
             ### 🔧 Technical Details
             - Built with Rust and WebGPU compute shaders

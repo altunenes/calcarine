@@ -4,9 +4,19 @@ use ndarray::{Array2, Array3, Array4, s};
 use ort::{
     session::Session,
     session::builder::GraphOptimizationLevel,
+    value::{Tensor, TensorRef}
+};
+
+#[cfg(target_os = "macos")]
+use ort::{
     execution_providers::CoreMLExecutionProvider,
     execution_providers::coreml::CoreMLComputeUnits,
-    value::{Tensor, TensorRef}
+};
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use ort::{
+    execution_providers::CUDAExecutionProvider,
+    execution_providers::CPUExecutionProvider,
 };
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -70,19 +80,35 @@ impl FastVLM {
         
 
         let create_session = |model_path: &str| -> Result<Session> {
-            let builder = Session::builder()
+            let mut builder = Session::builder()
                 .map_err(|e| anyhow::anyhow!("Session builder error: {:?}", e))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|e| anyhow::anyhow!("Optimization level error: {:?}", e))?
-                .with_execution_providers([
+                .map_err(|e| anyhow::anyhow!("Optimization level error: {:?}", e))?;
+
+            // Platform-specific execution providers
+            #[cfg(target_os = "macos")]
+            {
+                builder = builder.with_execution_providers([
                     CoreMLExecutionProvider::default()
                         .with_compute_units(CoreMLComputeUnits::CPUAndGPU)
                         .with_static_input_shapes(true)
                         .build()
                 ])
                 .map_err(|e| anyhow::anyhow!("CoreML execution provider error: {:?}", e))?;
-            
-            tracing::info!("Using CoreML (All GPU) execution provider for {}", model_path);
+                
+                tracing::info!("Using CoreML execution provider for {}", model_path);
+            }
+
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            {
+                builder = builder.with_execution_providers([
+                    CUDAExecutionProvider::default().build(),
+                    CPUExecutionProvider::default().build()
+                ])
+                .map_err(|e| anyhow::anyhow!("CUDA/CPU execution provider error: {:?}", e))?;
+                
+                tracing::info!("Using CUDA + CPU execution providers for {}", model_path);
+            }
 
             Ok(builder.commit_from_file(data_dir.join(model_path))
                 .map_err(|e| anyhow::anyhow!("Model loading error for {}: {:?}", model_path, e))?)
