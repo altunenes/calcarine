@@ -2,9 +2,9 @@
 
 Scene analysis from Apple FastVLM model 
 
-
+prompt: **What is written in the upper left and upper right corners?**
 <div align="center">
-  <img width="600" alt="calcarine" src="https://github.com/user-attachments/assets/b0596266-882c-4231-97bd-5deb59e5f79e" />
+  <img width="600" alt="calcarine" src="https://github.com/user-attachments/assets/44990581-0312-4237-80ed-623f6000794a" />
 </div>
 
 
