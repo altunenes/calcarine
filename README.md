@@ -3,6 +3,8 @@
 Scene analysis from Apple FastVLM model 
 
 prompt: **What is written in the upper left and upper right corners?**
+3.58 seconds processing time. MacOS m3 16 GB
+
 <div align="center">
   <img width="600" alt="calcarine" src="https://github.com/user-attachments/assets/44990581-0312-4237-80ed-623f6000794a" />
 </div>
