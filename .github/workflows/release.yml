@@ -149,7 +149,7 @@ jobs:
         shell: bash
         run: |
           echo "Building Calcarine for ${{ matrix.target }} with ${{ matrix.variant_name }} execution provider"
-          cargo build --release --target ${{ matrix.target }}
+          cargo build --release
 
       # Prepare release package
       - name: Prepare release package
@@ -161,7 +161,7 @@ jobs:
           mkdir -p "release/calcarine-${{ matrix.variant }}/shader"
           
           # Copy the binary
-          cp "target/${{ matrix.target }}/release/calcarine${{ matrix.ext }}" "release/calcarine-${{ matrix.variant }}/"
+          cp "target/release/calcarine${{ matrix.ext }}" "release/calcarine-${{ matrix.variant }}/"
           
           # Copy shader files
           cp shader/*.wgsl "release/calcarine-${{ matrix.variant }}/shader/"
