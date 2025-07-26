@@ -9,7 +9,6 @@ cuneus = { version = "0.2.2", features = ["media"] }
 bytemuck = { version = "1", features = ["derive"] }
 
 # AI/ML dependencies
-ort = { version = "2.0.0-rc.10" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ndarray = "0.16"
 image = { version = "0.25", features = ["png", "jpeg", "webp"] }
@@ -20,6 +19,16 @@ anyhow = "1.0"
 reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
 
+# System directories
+dirs = "5.0"
+
 # Logging
 tracing = "0.1"
 env_logger = "0.11"
+
+# Platform-specific ONNX Runtime execution providers
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "2.0.0-rc.10", features = ["coreml"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+ort = { version = "2.0.0-rc.10", features = ["cuda"] }

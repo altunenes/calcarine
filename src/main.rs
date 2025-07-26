@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use cuneus::prelude::*;
 
-mod phi3_vision;
+mod fastvlm;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -46,8 +46,8 @@ struct Calcarine {
     llm_processing: bool,
     
     analysis_sender: Option<std::sync::mpsc::Sender<(Vec<u8>, u32, u32, String)>>,
-    result_receiver: Option<std::sync::mpsc::Receiver<phi3_vision::VisionAnalysisResult>>,
-    last_analysis_result: Option<phi3_vision::VisionAnalysisResult>,
+    result_receiver: Option<std::sync::mpsc::Receiver<fastvlm::FastVLMAnalysisResult>>,
+    last_analysis_result: Option<fastvlm::FastVLMAnalysisResult>,
 }
 
 impl Calcarine {
@@ -366,38 +366,75 @@ impl Calcarine {
         Ok(unpadded_data)
     }
     
-    fn init_phi3_vision() -> Option<phi3_vision::Phi3Vision> {
+    fn init_fastvlm() -> Option<fastvlm::FastVLM> {
+        println!("🔍 Searching for FastVLM models...");
+        tracing::info!("🔍 Searching for FastVLM models...");
+        
+        // Get the system-standard model directory
+        let system_model_dir = fastvlm::download::get_default_model_dir();
+        
         let possible_paths = [
-            std::path::Path::new("data/3.5_v"),
-            std::path::Path::new("../data/3.5_v"),
-            std::path::Path::new("../../data/3.5_v"),
+            system_model_dir.as_path(),
+            std::path::Path::new("data/fastvlm"),
+            std::path::Path::new("../data/fastvlm"),
+            std::path::Path::new("../../data/fastvlm"),
+            std::path::Path::new("."),
         ];
         
-        let data_dir = possible_paths.iter()
-            .find(|path| path.exists() && path.join("tokenizer.json").exists())
+        // First check if models exist in any of the possible paths
+        let existing_dir = possible_paths.iter()
+            .find(|path| {
+                let exists = path.exists() && 
+                    path.join("tokenizer.json").exists() &&
+                    path.join("vision_encoder.onnx").exists() &&
+                    path.join("embed_tokens.onnx").exists() &&
+                    path.join("decoder_model_merged.onnx").exists();
+                
+                println!("🔍 Checking path {:?}: {}", path, if exists { "✅ Found all models" } else { "❌ Missing models" });
+                tracing::info!("🔍 Checking path {:?}: {}", path, if exists { "✅ Found all models" } else { "❌ Missing models" });
+                exists
+            })
             .copied();
             
-        let data_dir = match data_dir {
-            Some(dir) => {
-                tracing::info!("Found PHI-3.5 data directory at: {:?}", dir);
-                dir
-            },
-            None => {
-                tracing::warn!("PHI-3.5 data directory not found in any of: {:?}", possible_paths);
-                return None;
+        let data_dir = if let Some(dir) = existing_dir {
+            tracing::info!("Found FastVLM data directory at: {:?}", dir);
+            dir.to_path_buf()
+        } else {
+            println!("📥 FastVLM models not found, attempting automatic download...");
+            tracing::info!("FastVLM models not found, attempting automatic download...");
+            let download_dir = fastvlm::download::get_default_model_dir();
+            let absolute_path = std::fs::canonicalize(&download_dir).unwrap_or_else(|_| download_dir.clone());
+            println!("📁 Download directory: {:?}", download_dir);
+            println!("📁 Absolute path: {:?}", absolute_path);
+            
+            let rt = tokio::runtime::Runtime::new().ok()?;
+            match rt.block_on(fastvlm::download::download_fastvlm_models(&download_dir)) {
+                Ok(_) => {
+                    let final_absolute_path = std::fs::canonicalize(&download_dir).unwrap_or_else(|_| download_dir.clone());
+                    println!("✅ FastVLM models downloaded successfully to: {:?}", download_dir);
+                    println!("✅ Absolute path: {:?}", final_absolute_path);
+                    tracing::info!("FastVLM models downloaded successfully to: {:?}", download_dir);
+                    download_dir
+                },
+                Err(e) => {
+                    println!("❌ Failed to download FastVLM models: {}", e);
+                    tracing::error!("Failed to download FastVLM models: {}", e);
+                    tracing::warn!("Please manually download models to one of: {:?}", possible_paths);
+                    return None;
+                }
             }
         };
         
-        let config = phi3_vision::VisionConfig::default();
+        let config = fastvlm::FastVLMConfig::default();
         match tokio::runtime::Runtime::new() {
             Ok(rt) => {
-                match rt.block_on(phi3_vision::Phi3Vision::new(data_dir, config)) {
-                    Ok(phi3) => {
-                        tracing::info!("PHI-3.5 Vision initialized successfully");
-                        Some(phi3)
+                match rt.block_on(fastvlm::FastVLM::new(&data_dir, config)) {
+                    Ok(fastvlm) => {
+                        tracing::info!("FastVLM initialized successfully with CoreML acceleration");
+                        Some(fastvlm)
                     },
                     Err(e) => {
-                        tracing::error!("Failed to initialize PHI-3.5 Vision: {}", e);
+                        tracing::error!("Failed to initialize FastVLM: {}", e);
                         None
                     }
                 }
@@ -636,25 +673,25 @@ impl ShaderManager for Calcarine {
             label: Some("Compute Bind Group"),
         });
         
-        // Initialize PHI-3.5 Vision (may be None if models not available)
-        println!("🔧 Initializing PHI-3.5 Vision...");
-        let mut phi3_vision = Self::init_phi3_vision();
-        let llm_enabled = phi3_vision.is_some();
+        // Initialize FastVLM (may be None if models not available)
+        println!("🔧 Initializing FastVLM...");
+        let mut fastvlm = Self::init_fastvlm();
+        let llm_enabled = fastvlm.is_some();
         
-        let (analysis_sender, result_receiver) = if let Some(mut phi3_vision_instance) = phi3_vision.take() {
+        let (analysis_sender, result_receiver) = if let Some(mut fastvlm_instance) = fastvlm.take() {
             let (tx, rx) = std::sync::mpsc::channel();
             let (result_tx, result_rx) = std::sync::mpsc::channel();
             
             std::thread::spawn(move || {
                 for (image_data, width, height, prompt) in rx {
-                    match phi3_vision_instance.analyze_frame_sync(image_data, width, height, Some(prompt)) {
+                    match fastvlm_instance.analyze_frame_sync(image_data, width, height, Some(prompt)) {
                         Ok(result) => {
                             if result_tx.send(result).is_err() {
                                 break;
                             }
                         }
                         Err(e) => {
-                            println!("❌ Background LLM analysis failed: {}", e);
+                            println!("❌ Background FastVLM analysis failed: {}", e);
                         }
                     }
                 }
@@ -665,9 +702,9 @@ impl ShaderManager for Calcarine {
         };
         
         if llm_enabled {
-            println!("✅ PHI-3.5 Vision initialized successfully with background processing!");
+            println!("✅ FastVLM initialized successfully with CoreML GPU acceleration!");
         } else {
-            println!("⚠️  PHI-3.5 Vision initialization failed - LLM features disabled");
+            println!("⚠️  FastVLM initialization failed - LLM features disabled");
         }
         
         let mut result = Self {
@@ -838,7 +875,7 @@ impl ShaderManager for Calcarine {
                         
                         ui.separator();
                         
-                        egui::CollapsingHeader::new("🤖 AI Analysis Settings")
+                        egui::CollapsingHeader::new("🤖 FastVLM AI Analysis Settings")
                             .default_open(false)
                             .show(ui, |ui| {
                                 if self.analysis_sender.is_some() {
@@ -873,9 +910,10 @@ impl ShaderManager for Calcarine {
                                         self.last_analysis_time = Instant::now() - std::time::Duration::from_secs(self.analysis_interval_seconds as u64);
                                     }
                                 } else {
-                                    ui.heading("⚠️ PHI-3.5 Vision Unavailable");
+                                    ui.heading("⚠️ FastVLM Unavailable");
                                     ui.label("Models not found or failed to load");
-                                    ui.label("Expected location: data/3.5_v/tokenizer.json");
+                                    ui.label("Expected: tokenizer.json, vision_encoder.onnx,");
+                                    ui.label("embed_tokens.onnx, decoder_model_merged.onnx");
                                     ui.add_space(5.0);
                                     ui.label("🔄 Restart the app to retry initialization");
                                 }
@@ -1014,110 +1052,6 @@ impl ShaderManager for Calcarine {
     }
 }
 
-async fn download_models_if_needed() -> Result<(), Box<dyn std::error::Error>> {
-    use std::path::Path;
-    
-    let model_dir = Path::new("data/3.5_v");
-    let base_url = "https://huggingface.co/microsoft/Phi-3.5-vision-instruct-onnx/resolve/main/cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4";
-    
-    let required_files = [
-        ("genai_config.json", 0.002),
-        ("phi-3.5-v-instruct-embedding.onnx", 0.006),
-        ("phi-3.5-v-instruct-embedding.onnx.data", 394.0),
-        ("phi-3.5-v-instruct-text.onnx", 52.1),
-        ("phi-3.5-v-instruct-text.onnx.data", 2330.0),
-        ("phi-3.5-v-instruct-vision.onnx", 0.414),
-        ("phi-3.5-v-instruct-vision.onnx.data", 445.0),
-        ("processor_config.json", 0.001),
-        ("special_tokens_map.json", 0.001),
-        ("tokenizer.json", 1.85),
-        ("tokenizer_config.json", 0.01),
-    ];
-    
-    let mut missing_files = Vec::new();
-    for (filename, size_mb) in &required_files {
-        let file_path = model_dir.join(filename);
-        if !file_path.exists() {
-            missing_files.push((*filename, *size_mb));
-        } else if *size_mb > 50.0 {
-            if let Ok(metadata) = std::fs::metadata(&file_path) {
-                let actual_size_mb = metadata.len() as f64 / 1_000_000.0;
-                let size_diff_percent = (actual_size_mb - size_mb).abs() / size_mb * 100.0;
-                if size_diff_percent > 1.0 {
-                    missing_files.push((*filename, *size_mb));
-                }
-            }
-        }
-    }
-    
-    if missing_files.is_empty() {
-        return Ok(());
-    }
-    
-    show_download_progress_window(missing_files, model_dir, base_url).await?;
-    Ok(())
-}
-
-async fn show_download_progress_window(missing_files: Vec<(&str, f64)>, model_dir: &std::path::Path, base_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-    
-    let total_size: f64 = missing_files.iter().map(|(_, size)| size).sum();
-    
-    
-    println!("\n{}", "=".repeat(60));
-    println!("🎨 CALCARINE - FIRST TIME SETUP");
-    println!("{}", "=".repeat(60));
-    println!("📦 Downloading PHI-3.5 Vision AI models ({:.1} MB)", total_size);
-    println!("⏳ This is a one-time download. Please be patient...");
-    println!("{}", "=".repeat(60));
-    
-    std::fs::create_dir_all(model_dir)?;
-    
-    let client = reqwest::Client::new();
-    let mut file_count = 0;
-    let total_files = missing_files.len();
-    
-    for (filename, _) in missing_files {
-        file_count += 1;
-        println!("\n[{}/{}] 📥 Downloading: {}", file_count, total_files, filename);
-        
-        let url = format!("{}/{}", base_url, filename);
-        let file_path = model_dir.join(filename);
-        
-        let response = client.get(&url).send().await?;
-        let total_size = response.content_length().unwrap_or(0);
-        
-        let mut file = tokio::fs::File::create(&file_path).await?;
-        let mut downloaded = 0u64;
-        let mut stream = response.bytes_stream();
-        let mut last_progress = 0;
-        
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-            
-            if total_size > 0 {
-                let progress = (downloaded as f32 / total_size as f32) * 100.0;
-                if progress as i32 >= last_progress + 5 {
-                    last_progress = progress as i32;
-                    println!("    Progress: {:.0}%", progress);
-                }
-            }
-        }
-        
-        file.flush().await?;
-        println!("    ✅ Completed: {}", filename);
-    }
-    
-    println!("\n{}", "=".repeat(60));
-    println!("🎉 Download completed successfully!");
-    println!("🚀 Starting Calcarine...");
-    println!("{}", "=".repeat(60));
-    
-    Ok(())
-}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // On Windows, allocate a console for GUI apps to show download progress
@@ -1139,10 +1073,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     env_logger::init();
     
-    println!("🚀 Starting Calcarine with PHI-3.5 Vision integration");
-    
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(download_models_if_needed())?;
+    println!("🚀 Starting Calcarine with FastVLM integration");
     
     // On Windows, hide the console after downloads are complete
     #[cfg(target_os = "windows")]
