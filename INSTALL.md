@@ -4,9 +4,9 @@
 
 1. Go to the [Releases page](https://github.com/altunenes/calcarine/releases)
 2. Download the appropriate archive for your platform:
-   - **Windows**: `calcarine-x86_64-pc-windows-msvc.zip`
-   - **macOS**: `calcarine-x86_64-apple-darwin.tar.gz`
-   - **Linux**: `calcarine-x86_64-unknown-linux-gnu.tar.gz`
+   - **macOS**: `calcarine-x86_64-apple-darwin-coreml.tar.gz` (CoreML GPU acceleration)
+   - **Windows**: `calcarine-x86_64-pc-windows-msvc-cuda.zip` (CUDA GPU + CPU fallback)
+   - **Linux**: `calcarine-x86_64-unknown-linux-gnu-cuda.tar.gz` (CUDA GPU + CPU fallback)
 
 ## Prerequisites
 
@@ -17,6 +17,13 @@
 
 **For building from source (Development):**
 - Install GStreamer **Development** package in addition to runtime
+
+### CUDA Requirements (Windows/Linux only)
+
+For **optimal GPU performance** on Windows and Linux:
+- Install [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) and cuDNN
+- **Note**: CUDA runtime files are not included in releases due to size constraints
+- **Fallback**: If CUDA is not available, the application will automatically use CPU inference
 
 ### Platform-Specific Requirements
 
