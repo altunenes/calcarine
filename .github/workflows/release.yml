@@ -173,20 +173,20 @@ jobs:
           1. GStreamer 1.26.0 or later must be installed on your system
              Download from: https://gstreamer.freedesktop.org/download/
           
-          2. PHI-3.5 Vision models will be automatically downloaded on first run
-             Models are downloaded to: data/3.5_v/ directory
-             Total download size: ~3.2 GB (one-time download)
+          2. FastVLM models will be automatically downloaded on first run
+             Models are downloaded to: data/fastvlm/ directory
+             Total download size: ~1.4 GB (one-time download)
           
           3. The 'shader' directory must remain in the same folder as the executable
           
           INSTALLATION:
           1. Extract this archive to your desired location
           2. Install GStreamer if not already installed
-          3. Run the executable - models will download automatically
+          3. Run the executable - FastVLM models will download automatically
           
           FEATURES:
           - Real-time GPU-accelerated image processing
-          - AI-powered image analysis using Microsoft PHI-3.5 Vision
+          - AI-powered image analysis using Apple FastVLM
           - Support for images, videos, and webcam input
           - Cross-platform: Windows, macOS, Linux
           
@@ -205,7 +205,7 @@ jobs:
           @echo off
           echo Starting Calcarine...
           echo.
-          echo First run will download AI models (~3.2 GB)
+          echo First run will download FastVLM models (~1.4 GB)
           echo This may take several minutes depending on your internet connection.
           echo.
           if not exist shader mkdir shader
@@ -221,7 +221,7 @@ jobs:
           #!/bin/bash
           echo "Starting Calcarine..."
           echo ""
-          echo "First run will download AI models (~3.2 GB)"
+          echo "First run will download FastVLM models (~1.4 GB)"
           echo "This may take several minutes depending on your internet connection."
           echo ""
           mkdir -p shader data
@@ -273,7 +273,7 @@ jobs:
             
             ### 🎨 Features
             - **Real-time GPU compute shaders** for image processing effects
-            - **AI-powered image analysis** using Microsoft PHI-3.5 Vision model
+            - **AI-powered image analysis** using Apple FastVLM model
             - **Multi-source input**: Images, videos, webcam feeds
             - **Interactive UI** with real-time parameter adjustment
             - **Cross-platform**: Windows, macOS, Linux
@@ -282,7 +282,7 @@ jobs:
             1. Download the appropriate archive for your platform
             2. Extract to your desired location
             3. Install **GStreamer 1.26.0+** from https://gstreamer.freedesktop.org/download/
-            4. Run the executable - AI models will download automatically (~3.2 GB first time)
+            4. Run the executable - FastVLM models will download automatically (~1.4 GB first time)
             
             ### 🚀 Quick Start
             - Press **'H'** to toggle settings UI
@@ -292,12 +292,11 @@ jobs:
             
             ### 📋 System Requirements
             - **GStreamer 1.26.0+** (required for media support)
-            - **~4 GB free space** (for AI models)
+            - **~2 GB free space** (for FastVLM models)
             - **GPU with compute shader support**
             - **Internet connection** (first run only, for model download)
             
             ### 🔧 Technical Details
             - Built with Rust and WebGPU compute shaders
-            - Uses Microsoft PHI-3.5 Vision for CPU-optimized AI inference
             - Cross-platform media handling via GStreamer
             - Real-time performance with 60 FPS rendering
