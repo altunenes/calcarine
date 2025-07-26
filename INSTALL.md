@@ -38,8 +38,8 @@
 
 ## First Run
 
-1. **Model Download**: On first launch, Calcarine will automatically download PHI-3.5 Vision models (~3.2 GB)
-2. **Storage Location**: Models are saved to `~/data/3.5_v/` directory
+1. **Model Download**: On first launch, Calcarine will automatically download FastVLM models (~1.4 GB)
+2. **Storage Location**: Models are saved to `data/fastvlm/` directory
 3. **Internet Required**: Only needed for the initial model download
 
 ## Usage
