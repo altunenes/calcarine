@@ -39,31 +39,22 @@ impl FastVLMImageProcessor {
     }
 
 
-    /// Resize image with padding to exact target dimensions while preserving aspect ratio
-    /// This ensures the entire image content is visible (no cropping)
     fn resize_with_padding(&self, image: &DynamicImage, target_width: u32, target_height: u32) -> Result<DynamicImage> {
         let (orig_width, orig_height) = image.dimensions();
-        
-        // Calculate scale factor to fit within target dimensions while preserving aspect ratio
         let scale_x = target_width as f32 / orig_width as f32;
         let scale_y = target_height as f32 / orig_height as f32;
-        let scale = scale_x.min(scale_y); // Use smaller scale to ensure image fits
+        let scale = scale_x.min(scale_y);
         
-        // Calculate new dimensions
         let new_width = (orig_width as f32 * scale) as u32;
         let new_height = (orig_height as f32 * scale) as u32;
         
-        // Resize the image
         let resized = image.resize_exact(new_width, new_height, image::imageops::FilterType::Lanczos3);
         
-        // Create a black canvas of target size
         let mut canvas = image::RgbImage::new(target_width, target_height);
         
-        // Calculate padding to center the resized image
         let x_offset = (target_width - new_width) / 2;
         let y_offset = (target_height - new_height) / 2;
         
-        // Copy resized image onto the canvas
         let resized_rgb = resized.to_rgb8();
         for y in 0..new_height {
             for x in 0..new_width {
