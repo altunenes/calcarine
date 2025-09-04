@@ -1071,7 +1071,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     cuneus::gst::init()?;
     
-    env_logger::init();
+    tracing_subscriber::fmt::init();
     
     println!("🚀 Starting Calcarine with FastVLM integration");
     

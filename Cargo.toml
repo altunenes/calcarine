@@ -23,12 +23,12 @@ futures-util = "0.3"
 dirs = "5.0"
 
 # Logging
-tracing = "0.1"
-env_logger = "0.11"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 # Platform-specific ONNX Runtime execution providers
 [target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "2.0.0-rc.10", features = ["coreml"] }
+ort = { git = "https://github.com/pykeio/ort", branch = "main", features = ["coreml"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
-ort = { version = "2.0.0-rc.10", features = ["cuda"] }
+ort = { git = "https://github.com/pykeio/ort", branch = "main", features = ["cuda"] }
