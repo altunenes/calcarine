@@ -65,14 +65,29 @@ pub struct FastVLM {
 
 impl FastVLM {
     pub async fn new(data_dir: &Path, config: FastVLMConfig) -> Result<Self> {
-        tracing::info!("Initializing FastVLM with CoreML GPU acceleration...");
+        tracing::info!("Initializing FastVLM...");
+
+        let mut init = ort::init().with_name("fastvlm");
+
+        #[cfg(target_os = "macos")]
+        {
+            tracing::info!("Using CoreML execution provider.");
+            init = init.with_execution_providers([CoreMLExecutionProvider::default()
+                .with_compute_units(CoreMLComputeUnits::CPUAndGPU)
+                .with_static_input_shapes(true)
+                .build()]);
+        }
+
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            tracing::info!("Using CUDA + CPU execution providers.");
+            init = init.with_execution_providers([
+                CUDAExecutionProvider::default().build(),
+                CPUExecutionProvider::default().build(),
+            ]);
+        }
         
-        let _ = ort::init()
-            .with_name("fastvlm")
-            .commit()
-            .map_err(|e| {
-                tracing::debug!("ONNX Runtime already initialized or failed: {:?}", e);
-            });
+        init.commit();
         
         let tokenizer_path = data_dir.join("tokenizer.json");
         let tokenizer = Tokenizer::from_file(tokenizer_path)
@@ -80,35 +95,12 @@ impl FastVLM {
         
 
         let create_session = |model_path: &str| -> Result<Session> {
-            let mut builder = Session::builder()
+            let builder = Session::builder()
                 .map_err(|e| anyhow::anyhow!("Session builder error: {:?}", e))?
                 .with_optimization_level(GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("Optimization level error: {:?}", e))?;
 
-            // Platform-specific execution providers
-            #[cfg(target_os = "macos")]
-            {
-                builder = builder.with_execution_providers([
-                    CoreMLExecutionProvider::default()
-                        .with_compute_units(CoreMLComputeUnits::CPUAndGPU)
-                        .with_static_input_shapes(true)
-                        .build()
-                ])
-                .map_err(|e| anyhow::anyhow!("CoreML execution provider error: {:?}", e))?;
-                
-                tracing::info!("Using CoreML execution provider for {}", model_path);
-            }
-
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            {
-                builder = builder.with_execution_providers([
-                    CUDAExecutionProvider::default().build(),
-                    CPUExecutionProvider::default().build()
-                ])
-                .map_err(|e| anyhow::anyhow!("CUDA/CPU execution provider error: {:?}", e))?;
-                
-                tracing::info!("Using CUDA + CPU execution providers for {}", model_path);
-            }
+            tracing::info!("Loading model: {}", model_path);
 
             Ok(builder.commit_from_file(data_dir.join(model_path))
                 .map_err(|e| anyhow::anyhow!("Model loading error for {}: {:?}", model_path, e))?)
