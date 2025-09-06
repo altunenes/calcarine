@@ -14,7 +14,6 @@ struct ModelFile {
     size_info: &'static str,
 }
 
-/// Recommended multimodal models that work well with llama-cpp-2 (from official example)
 const RECOMMENDED_MODELS: &[ModelFile] = &[
     ModelFile {
         name: "gemma-3-4b-it-Q4_K_M.gguf",
@@ -114,7 +113,7 @@ pub fn find_model_files(model_dir: &Path) -> Result<(PathBuf, PathBuf)> {
 
 /// Download a single model file with progress
 async fn download_file(client: &Client, url: &str, dest_path: &Path, name: &str) -> Result<()> {
-    println!("📥 Downloading {}...", name);
+    println!("Downloading {}...", name);
     
     let response = client.get(url)
         .send()
@@ -144,7 +143,7 @@ async fn download_file(client: &Client, url: &str, dest_path: &Path, name: &str)
         
         if total_size > 0 && (downloaded % (50 * 1024 * 1024) == 0 || downloaded == total_size) {
             let progress = (downloaded as f64 / total_size as f64) * 100.0;
-            println!("   📊 {}: {:.1}% ({:.1} MB / {:.1} MB)", 
+            println!("   {}: {:.1}% ({:.1} MB / {:.1} MB)", 
                      name,
                      progress, 
                      downloaded as f64 / (1024.0 * 1024.0),
@@ -153,14 +152,14 @@ async fn download_file(client: &Client, url: &str, dest_path: &Path, name: &str)
     }
 
     file.flush().await.with_context(|| "Failed to flush file")?;
-    println!("✅ {} downloaded successfully", name);
+    println!("{} downloaded successfully", name);
     Ok(())
 }
 
 /// Download recommended models automatically
 pub async fn download_models() -> Result<PathBuf> {
     let model_dir = get_default_model_dir();
-    println!("🚀 Starting model download to: {}", model_dir.display());
+    println!("Starting model download to: {}", model_dir.display());
     
     // Create directory
     fs::create_dir_all(&model_dir)
@@ -174,7 +173,7 @@ pub async fn download_models() -> Result<PathBuf> {
     if !main_path.exists() {
         download_file(&client, main_model.recommended_url, &main_path, main_model.name).await?;
     } else {
-        println!("✅ {} already exists, skipping", main_model.name);
+        println!("{} already exists, skipping", main_model.name);
     }
     
     // Download mmproj
@@ -183,11 +182,11 @@ pub async fn download_models() -> Result<PathBuf> {
     if !mmproj_path.exists() {
         download_file(&client, mmproj_model.recommended_url, &mmproj_path, mmproj_model.name).await?;
     } else {
-        println!("✅ {} already exists, skipping", mmproj_model.name);
+        println!("{} already exists, skipping", mmproj_model.name);
     }
     
-    println!("🎉 Model download completed!");
-    println!("📍 Models stored at: {}", model_dir.display());
+    println!("Model download completed!");
+    println!("Models stored at: {}", model_dir.display());
     
     Ok(model_dir)
 }
@@ -195,14 +194,14 @@ pub async fn download_models() -> Result<PathBuf> {
 /// Print instructions for manual model download
 pub fn print_download_instructions() {
     println!();
-    println!("🤖 MULTIMODAL MODEL SETUP REQUIRED");
+    println!("MULTIMODAL MODEL SETUP REQUIRED");
     println!("=====================================");
     println!();
     println!("Calcarine now uses llama-cpp-2 with native multimodal support!");
     println!("You need to download two files:");
     println!();
     
-    println!("📥 RECOMMENDED MODELS:");
+    println!("RECOMMENDED MODELS:");
     for model in RECOMMENDED_MODELS {
         println!("  • {}", model.name);
         println!("    {} ({})", model.description, model.size_info);
@@ -210,37 +209,17 @@ pub fn print_download_instructions() {
         println!();
     }
     
-    println!("🔧 SETUP INSTRUCTIONS:");
+    println!("SETUP INSTRUCTIONS:");
     let model_dir = get_default_model_dir();
-    println!("  📂 Target directory: {}", model_dir.display());
+    println!("  Target directory: {}", model_dir.display());
     println!("  1. Create model directory");
     println!("  2. Download both files to this directory");
     println!("  3. Restart Calcarine");
     println!();
     
-    println!("🔄 AUTOMATIC DOWNLOAD AVAILABLE:");
+    println!("AUTOMATIC DOWNLOAD AVAILABLE:");
     println!("  The app can download models automatically when you click");
     println!("  the 'Download Models' button in the AI settings panel.");
-    println!();
-    
-    println!("💡 QUICK SETUP COMMANDS:");
-    println!("  mkdir -p {}", model_dir.display());
-    println!("  cd {}", model_dir.display());
-    println!("  # Download main model:");
-    println!("  wget {}", RECOMMENDED_MODELS[0].recommended_url);
-    println!("  # Download projection weights:");
-    println!("  wget {}", RECOMMENDED_MODELS[1].recommended_url);
-    println!();
-    
-    println!("🚀 Alternative models (may require different setup):");
-    for model in ALTERNATIVE_MODELS {
-        println!("  • {} ({})", model.description, model.size_info);
-    }
-    println!();
-    
-    println!("📖 More models available at:");
-    println!("  • https://huggingface.co/models?other=llava");
-    println!("  • https://huggingface.co/models?other=phi-3-vision");
     println!();
 }
 

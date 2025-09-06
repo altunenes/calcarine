@@ -66,7 +66,6 @@ struct Calcarine {
     result_receiver: Option<std::sync::mpsc::Receiver<fastvlm::LlamaMultimodalAnalysisResult>>,
     last_analysis_result: Option<fastvlm::LlamaMultimodalAnalysisResult>,
     
-    // New video analysis features
     video_mode_enabled: bool,
     video_chunk_interval: f32, // seconds between video chunks
     last_video_chunk_time: Instant,
@@ -301,7 +300,6 @@ impl Calcarine {
         });
         
         // Use a short blocking wait to give the GPU operation time to complete
-        // This is much shorter than the original blocking version, so it won't freeze the UI
         debug!("Polling GPU device with short wait...");
         core.device.poll(wgpu::Maintain::Wait);
         
@@ -333,7 +331,7 @@ impl Calcarine {
     }
     
     fn capture_frame_sync(&mut self, core: &Core, time: f32) -> Result<Vec<u8>, wgpu::SurfaceError> {
-        // Synchronous version for fallback - this will block but guarantees completion
+        // Synchronous version for fallback
         info!("Using synchronous frame capture as fallback");
         let width = ((core.size.width as f32 * self.llm_resolution_scale) as u32).max(320);
         let height = ((core.size.height as f32 * self.llm_resolution_scale) as u32).max(240);
@@ -596,7 +594,6 @@ impl Calcarine {
     fn init_llama_multimodal() -> Option<fastvlm::LlamaMultimodal> {
         info!("Setting up Llama-cpp-2 multimodal...");
         
-        // Try to setup model configuration
         match fastvlm::llama_download::setup_model_config() {
             Ok((model_path, mmproj_path)) => {
                 info!("Found models:");
@@ -659,8 +656,6 @@ impl Calcarine {
             self.last_analysis_time = Instant::now();
             self.llm_processing = true;
             
-            // Temporarily reduce graphics processing during AI inference to free up GPU resources
-            debug!("GPU OPTIMIZATION: Reducing graphics pipeline load during AI processing...");
             
             let current_time = self.base.controls.get_time(&self.base.start_time);
             
@@ -703,7 +698,7 @@ impl Calcarine {
                                 None // Don't send request yet, accumulating frames
                             }
                         } else {
-                            // Single frame analysis (original behavior)
+                            // Single frame analysis
                             Some(AnalysisRequest::SingleFrame {
                                 image_data: frame_data,
                                 width: captured_width,
@@ -713,7 +708,7 @@ impl Calcarine {
                         };
                         
                         if let Some(request) = request {
-                            // Send the request to background thread for non-blocking processing
+                            // Send the request to background thread
                             if let Some(ref sender) = self.analysis_sender {
                                 match sender.send(request) {
                                     Ok(_) => {
@@ -744,7 +739,7 @@ impl Calcarine {
                     self.capture_retry_count += 1;
                     let elapsed = self.capture_retry_start.unwrap().elapsed();
                     
-                    const MAX_RETRIES: u32 = 3; // ~50ms at 60fps - very quick fallback for testing
+                    const MAX_RETRIES: u32 = 3;
                     const FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
                     
                     if self.capture_retry_count >= MAX_RETRIES || elapsed >= FALLBACK_TIMEOUT {

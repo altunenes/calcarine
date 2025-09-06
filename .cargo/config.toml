@@ -1,0 +1,8 @@
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-L", "/opt/homebrew/Cellar/molten-vk/1.4.0/lib",
+    "-lMoltenVK"
+]
+
+[env]
+VULKAN_SDK = "/opt/homebrew/Cellar/molten-vk/1.4.0"

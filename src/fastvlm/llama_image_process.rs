@@ -1,8 +1,8 @@
 use anyhow::Result;
 use image::{DynamicImage, GenericImageView};
 
-/// Simplified image processor for llama-cpp-2 multimodal
-/// The heavy lifting is done by the mtmd module, we just need basic preprocessing
+/// Image processor for llama-cpp-2 multimodal.
+/// This module provides basic image preprocessing. The main work is done by the `mtmd` module.
 pub struct LlamaImageProcessor;
 
 #[allow(dead_code)]
@@ -12,7 +12,6 @@ impl LlamaImageProcessor {
     }
 
     /// Basic image preprocessing - resize to reasonable dimensions
-    /// The mtmd module handles the actual model-specific preprocessing
     pub fn preprocess(&self, image: &DynamicImage) -> Result<DynamicImage> {
         let (width, height) = image.dimensions();
         

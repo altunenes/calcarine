@@ -71,7 +71,7 @@ pub struct ModelLoadingState {
     pub is_ready: bool,
 }
 
-// Optimized wrapper that uses persistent model instances  
+// Wrapper that uses persistent model instances  
 pub struct LlamaMultimodal {
     config: LlamaMultimodalConfig,
     frame_buffer: Vec<Vec<u8>>,
@@ -111,7 +111,7 @@ impl LlamaMultimodal {
             }
         });
         
-        // CRITICAL: Start model preloading in the background immediately
+        // Start model preloading in the background
         info!("Starting model preloading in background...");
         let config_clone = config.clone();
         std::thread::spawn(move || {
@@ -132,7 +132,7 @@ impl LlamaMultimodal {
         })
     }
 
-    /// Analyze a single frame using REAL llama-cpp-2 multimodal inference
+    /// Analyze a single frame using llama-cpp-2 multimodal inference
     pub fn analyze_frame_sync(
         &mut self,
         image_data: Vec<u8>,
@@ -143,18 +143,18 @@ impl LlamaMultimodal {
         let start_time = Instant::now();
         let prompt = prompt.unwrap_or_else(|| "Describe this image in less than 10 words".to_string());
         
-        tracing::debug!("Starting REAL multimodal analysis for {}x{} image", width, height);
+        tracing::debug!("Starting multimodal analysis for {}x{} image", width, height);
         
         
         // Convert raw RGBA to image
         let mut image = self.rgba_to_dynamic_image(image_data, width, height)?;
         
-        // EXTREME SPEED OPTIMIZATION - Use minimal input 
+        // Speed optimization: use a smaller input image. 
         let max_dimension = 32; // Tiny 32px input - CLIP will upscale to 896x896 anyway
         let scale_factor = (max_dimension as f32) / width.max(height) as f32;
         let new_width = (width as f32 * scale_factor) as u32;
         let new_height = (height as f32 * scale_factor) as u32;
-        debug!("SPEED OPTIMIZED: downsampling from {}x{} to {}x{} (model will upscale to 896x896 = {} patches)", 
+        debug!("Downsampling from {}x{} to {}x{} (model will upscale to 896x896 = {} patches)", 
                  width, height, new_width, new_height, (896/14) * (896/14));
         image = image.resize_exact(new_width, new_height, image::imageops::FilterType::Nearest); // Fastest resize
         
@@ -171,7 +171,7 @@ impl LlamaMultimodal {
         debug!("Image saved in {:?}", save_start.elapsed());
         
         // Try MTMD inference with timeout protection
-        info!("🔥 Attempting MTMD inference - will timeout if it hangs");
+        info!("Attempting MTMD inference - will timeout if it hangs");
         let generated_text = match self.run_multimodal_inference(&temp_path, &prompt) {
             Ok(result) => result,
             Err(e) => {
@@ -193,12 +193,12 @@ impl LlamaMultimodal {
         self.last_analysis = Some(result.clone());
         self.last_analysis_time = start_time;
         
-        tracing::info!("REAL multimodal analysis completed in {:?}: {}", processing_time, result.text);
+        tracing::info!("Multimodal analysis completed in {:?}: {}", processing_time, result.text);
         
         Ok(result)
     }
 
-    /// REAL multimodal inference using persistent models (optimized context creation)
+    /// Multimodal inference using persistent models (optimized context creation)
     fn run_multimodal_inference(&mut self, image_path: &str, prompt: &str) -> Result<String> {
         // Check if models are preloaded
         if MODEL_LOADED.get().is_none() {
@@ -206,17 +206,17 @@ impl LlamaMultimodal {
             return Ok("AI models are still loading in the background. Please try again in a moment.".to_string());
         }
         
-        info!("Running REAL llama-cpp-2 multimodal inference with cached models (FAST!)...");
+        info!("Running llama-cpp-2 multimodal inference with cached models (FAST!)...");
         debug!("DEBUG: Model cache status - Backend: {}, Model: {}", 
                  GLOBAL_BACKEND.get().is_some(), GLOBAL_MODEL.get().is_some());
         
-        // Use persistent models (NO reloading!)
+        // Use persistent models to avoid reloading
         let backend = GLOBAL_BACKEND.get()
             .ok_or_else(|| anyhow::anyhow!("Backend not initialized"))?;
         let model = GLOBAL_MODEL.get()
             .ok_or_else(|| anyhow::anyhow!("Model not loaded"))?;
         
-        // Create context with OPTIMIZED settings for maximum GPU performance  
+        // Create context with settings for GPU performance  
         let n_tokens = NonZeroU32::new(4096).unwrap(); // Full context size for better inference
         let context_params = LlamaContextParams::default()
             .with_n_threads(4) // Use more threads for parallel processing
@@ -227,60 +227,50 @@ impl LlamaMultimodal {
         // Create sampler (lightweight operation)
         let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
         
-        debug!("Using cached models - context creation is now FAST!");
+        debug!("Using cached models for faster context creation.");
         
-        // Create MTMD context with MAXIMUM GPU usage - optimize for speed
-        info!("🔥 STEP 1: About to create MTMD context with full GPU acceleration...");
+        // Create MTMD context with GPU usage
+        info!("Creating MTMD context with full GPU acceleration...");
         let context_start = std::time::Instant::now();
         let mtmd_params = MtmdContextParams {
-            use_gpu: true, // GPU required as per user demands
+            use_gpu: true, // Use GPU for acceleration
             print_timings: true,
-            n_threads: 1, // Try SINGLE thread - maybe thread contention is the issue
+            n_threads: 1, // Using a single thread to avoid potential contention
             media_marker: CString::new("<start_of_image>")?,
         };
-        info!("🔥 STEP 2: Calling MtmdContext::init_from_file() - this might be where 'encoding image slice' happens!");
+        info!("Calling MtmdContext::init_from_file() - this might be where 'encoding image slice' happens!");
         let mtmd_ctx = MtmdContext::init_from_file(&self.config.mmproj_path, model, &mtmd_params)?;
-        info!("✅ MTMD context created in {:.2}s", context_start.elapsed().as_secs_f32());
+        info!("MTMD context created in {:.2}s", context_start.elapsed().as_secs_f32());
         
-        // MANDATORY GPU VALIDATION - fail immediately if no GPU detected
-        #[cfg(target_os = "macos")]
-        {
-            // On macOS, we should see Metal backend for GPU acceleration
-            // If we see CPU backend in logs, the app should fail as requested by user
-            info!("GPU VALIDATION: Ensuring Metal backend is active for CLIP processing...");
-            info!("If you see 'CPU backend' warnings above, GPU acceleration failed!");
-        }
-        
-        // Get chat template (exactly like mtmd.rs)
         let chat_template = model.chat_template(None)?;
         
-        // Create batch (exactly like mtmd.rs)
+        // Create batch
         let mut batch = LlamaBatch::new(n_tokens.get() as usize, 1);
         
-        // Add media marker if not present (exactly like mtmd.rs)
+        // Add media marker if not present
         let mut full_prompt = prompt.to_string();
         let media_marker = "<start_of_image>";
         if !full_prompt.contains(media_marker) {
             full_prompt.push_str(media_marker);
         }
         
-        // Load image bitmap - THIS IS THE BOTTLENECK where "encoding image slice..." happens
-        warn!("🔥 CRITICAL: About to call MtmdBitmap::from_file - this is where it hangs!");
+        // Load image bitmap. This can be a bottleneck.
+        warn!("Calling MtmdBitmap::from_file - this is where it hangs!");
         debug!("Loading image: {}", image_path);
         let bitmap_start = Instant::now();
         
         // Direct call - let's see how long it actually takes
         let bitmap = MtmdBitmap::from_file(&mtmd_ctx, image_path)?;
-        info!("✅ Bitmap loaded in {:.2}s (this was the bottleneck!)", bitmap_start.elapsed().as_secs_f32());
+        info!("Bitmap loaded in {:.2}s (this was the bottleneck!)", bitmap_start.elapsed().as_secs_f32());
         let bitmaps = vec![bitmap];
         
-        // Create user message (exactly like mtmd.rs)
+        // Create user message
         let msg = LlamaChatMessage::new("user".to_string(), full_prompt)?;
         let chat = vec![msg.clone()];
         
         debug!("Evaluating message: {:?}", msg);
         
-        // Format the message using chat template (exactly like mtmd.rs)
+        // Format the message using chat template
         let formatted_prompt = model.apply_chat_template(&chat_template, &chat, true)?;
         
         let input_text = MtmdInputText {
@@ -293,35 +283,33 @@ impl LlamaMultimodal {
         
         debug!("Tokenizing with {} bitmaps", bitmap_refs.len());
         
-        // Tokenize the input (exactly like mtmd.rs)
+        // Tokenize the input
         let chunks = mtmd_ctx.tokenize(input_text, &bitmap_refs)?;
         debug!("Tokenization complete, {} chunks created", chunks.len());
         
-        // Evaluate chunks (THE BOTTLENECK) - optimized with smaller images and max GPU
-        info!("Starting chunk evaluation ({} chunks) - OPTIMIZED with 64px input and max GPU...", chunks.len());
-        warn!("WARNING: This is the slow step - 'encoding image slice...' - should be faster now");
+        // Evaluate chunks. This can be slow.
+        info!("Starting chunk evaluation ({} chunks) - with 64px input and max GPU...", chunks.len());
+        warn!("This is the slow step - 'encoding image slice...' - should be faster now");
         let eval_start = Instant::now();
         
         let n_past = chunks.eval_chunks(&mtmd_ctx, &mut context, 0, 0, 1, true)?;
         info!("✅ Chunk evaluation completed in {:.2}s (was 30s before optimization)!", eval_start.elapsed().as_secs_f32());
         
-        // Generate response with timeout protection (prevent freezing)
+        // Generate response with timeout protection
         let mut generated_text = String::new();
         let mut n_past = n_past;
-        let max_predict = 15; // Reduced for faster response
+        let max_predict = 15;
         let generation_start = Instant::now();
-        let max_generation_time = Duration::from_secs(5); // 5 second timeout
+        let max_generation_time = Duration::from_secs(5);
         
         debug!("Starting token generation...");
         
         for i in 0..max_predict {
-            // Timeout check to prevent freezing
             if generation_start.elapsed() > max_generation_time {
                 warn!("Generation timeout after {:?}, stopping early", generation_start.elapsed());
                 break;
             }
             
-            // Sample next token
             let token = sampler.sample(&context, 0);
             sampler.accept(token);
             
@@ -343,7 +331,6 @@ impl LlamaMultimodal {
             // Decode
             context.decode(&mut batch)?;
             
-            // Progress indicator for debugging
             if i % 5 == 0 {
                 debug!("Generated {} tokens so far...", i + 1);
             }
@@ -351,7 +338,6 @@ impl LlamaMultimodal {
         
         let result = generated_text.trim().to_string();
         
-        // Handle empty generation (common with black frames)
         let final_result = if result.is_empty() {
             debug!("Empty generation, likely black or empty image");
             "The image appears to be black or empty.".to_string()
@@ -386,11 +372,9 @@ impl LlamaMultimodal {
             backend_arc.clone()
         });
         
-        // Setup model parameters with MAXIMUM GPU usage - user demands GPU acceleration
         let mut model_params = LlamaModelParams::default();
-        model_params = model_params.with_n_gpu_layers(999); // Use ALL available GPU layers for maximum speed
+        model_params = model_params.with_n_gpu_layers(999);
         
-        info!("[Background] Loading main model with minimal GPU layers to avoid graphics pipeline conflict...");
         let model = LlamaModel::load_from_file(&backend_arc, &config.model_path, &model_params)?;
         let model_arc = Arc::new(model);
         
@@ -414,52 +398,8 @@ impl LlamaMultimodal {
         
         Ok(())
     }
-    
-    /// Get current loading state for UI display
-    pub fn get_loading_state(&self) -> ModelLoadingState {
-        let backend_ready = BACKEND_INITIALIZED.get().is_some();
-        let models_loaded = MODEL_LOADED.get().is_some();
-        
-        if !backend_ready {
-            ModelLoadingState {
-                is_loading: true,
-                progress_text: "Initializing AI backend...".to_string(),
-                is_ready: false,
-            }
-        } else if !models_loaded {
-            ModelLoadingState {
-                is_loading: true,
-                progress_text: "Loading multimodal models...".to_string(),
-                is_ready: false,
-            }
-        } else {
-            ModelLoadingState {
-                is_loading: false,
-                progress_text: "AI models ready".to_string(),
-                is_ready: true,
-            }
-        }
-    }
-    
-    /// Warm up the model loading system at startup (can be called in background)
-    pub fn warmup_models(&self) -> Result<()> {
-        debug!("Warming up model loading system...");
-        
-        // This can be called at startup to "prime" the model loading system
-        // and potentially cache some initialization work
-        let _backend_ready = BACKEND_INITIALIZED.get().cloned().unwrap_or(false);
-        
-        // Mark models as "warmed up" - in the future this would do actual model loading
-        MODEL_LOADED.get_or_init(|| {
-            debug!("Model warm-up completed (currently using fast mock mode)");
-            true
-        });
-        
-        Ok(())
-    }
 
 
-    /// NEW: Add frame to video buffer for chunk analysis
     pub fn add_video_frame(&mut self, image_data: Vec<u8>) {
         self.frame_buffer.push(image_data);
         
@@ -471,7 +411,7 @@ impl LlamaMultimodal {
         }
     }
 
-    /// NEW: Process accumulated video frames as a chunk
+    ///Process accumulated video frames as a chunk
     fn process_video_chunk(&mut self) -> Result<()> {
         if self.frame_buffer.is_empty() {
             return Ok(());
@@ -497,7 +437,7 @@ impl LlamaMultimodal {
 
         tracing::info!("Video chunk {} processed in {:?}: {}", self.current_chunk, processing_time, result.text);
 
-        // Clear processed frames (keeping overlap if configured)
+        // Clear processed frames
         let keep_frames = self.config.chunk_overlap_frames.min(self.frame_buffer.len());
         if keep_frames > 0 {
             self.frame_buffer = self.frame_buffer.split_off(self.frame_buffer.len() - keep_frames);
@@ -535,84 +475,8 @@ impl LlamaMultimodal {
         Ok(DynamicImage::ImageRgba8(image_buffer))
     }
 
-    pub fn get_last_analysis(&self) -> Option<&LlamaMultimodalAnalysisResult> {
-        self.last_analysis.as_ref()
-    }
 
-    /// NEW: Clear video buffer (useful for scene changes)
-    pub fn clear_video_buffer(&mut self) {
-        self.frame_buffer.clear();
-        self.current_chunk = 0;
-        tracing::debug!("Video buffer cleared");
-    }
-
-    /// NEW: Get video buffer status
     pub fn get_video_status(&self) -> (usize, usize) {
         (self.frame_buffer.len(), self.current_chunk)
     }
-    
-    /// Intelligent fallback image analysis (until MTMD encoding freeze is fixed)
-    fn analyze_image_fallback(&self, image_path: &str, _width: u32, _height: u32, _prompt: &str) -> Result<String> {
-        debug!("Running fallback image analysis...");
-        
-        // Load and analyze the image using basic image processing
-        let image = image::open(image_path)?;
-        let (img_width, img_height) = image.dimensions();
-        
-        // Calculate basic image statistics
-        let rgb_image = image.to_rgb8();
-        let pixels = rgb_image.as_raw();
-        
-        let mut brightness_sum = 0u64;
-        let mut color_variance = 0u64;
-        let pixel_count = (img_width * img_height) as usize;
-        
-        // Sample pixels for statistics (every 10th pixel for speed)
-        for i in (0..pixel_count).step_by(10) {
-            let pixel_idx = i * 3;
-            if pixel_idx + 2 < pixels.len() {
-                let r = pixels[pixel_idx] as u64;
-                let g = pixels[pixel_idx + 1] as u64;
-                let b = pixels[pixel_idx + 2] as u64;
-                brightness_sum += (r + g + b) / 3;
-                
-                // Simple color variance calculation
-                let max = r.max(g).max(b);
-                let min = r.min(g).min(b);
-                color_variance += max - min;
-            }
-        }
-        
-        let sample_count = (pixel_count / 10).max(1) as u64;
-        let avg_brightness = brightness_sum / sample_count;
-        let avg_color_variance = color_variance / sample_count;
-        
-        // Generate intelligent response based on image analysis
-        let analysis = if avg_brightness < 20 {
-            "The screen appears to be mostly black or very dark."
-        } else if avg_brightness > 200 {
-            "The screen appears to be very bright or mostly white."
-        } else if avg_color_variance < 10 {
-            "The screen shows a fairly uniform or simple interface."
-        } else if avg_color_variance > 80 {
-            "The screen shows a complex interface with varied colors and elements."
-        } else if img_width > img_height * 2 {
-            "The screen shows what appears to be a wide interface or multiple panels."
-        } else {
-            "The screen shows an active interface with various visual elements."
-        };
-        
-        let detailed_response = format!(
-            "{}. Image dimensions: {}x{}, Average brightness: {}/255, Visual complexity: {}.", 
-            analysis, 
-            img_width, 
-            img_height, 
-            avg_brightness,
-            if avg_color_variance > 50 { "High" } else if avg_color_variance > 25 { "Medium" } else { "Low" }
-        );
-        
-        debug!("Fallback analysis completed: {}", detailed_response);
-        Ok(detailed_response)
-    }
-    
 }
