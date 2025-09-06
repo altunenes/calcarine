@@ -12,8 +12,7 @@ path = "examples/test_mtmd.rs"
 cuneus = { version = "0.2.2", features = ["media"] }
 bytemuck = { version = "1", features = ["derive"] }
 
-# AI/ML dependencies - replaced ONNX with llama-cpp-2
-# Using the PR branch that fixes the mtmd CMakeLists.txt issue
+
 llama-cpp-2 = { git = "https://github.com/hongkongkiwi/llama-cpp-rs-2", branch = "feature/mtmd-build-fix", features = ["mtmd"] }
 image = { version = "0.25", features = ["png", "jpeg", "webp"] }
 ndarray = "0.16"
@@ -37,7 +36,7 @@ log = "0.4.27"
 
 # Platform-specific GPU acceleration
 [features]
-default = ["vulkan", "mtmd"]  # Use Vulkan instead of Metal
+default = ["vulkan", "mtmd"]
 cuda = ["llama-cpp-2/cuda"]
 metal = ["llama-cpp-2/metal"] 
 vulkan = ["llama-cpp-2/vulkan"]
