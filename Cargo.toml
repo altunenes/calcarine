@@ -13,11 +13,11 @@ cuneus = { version = "0.2.2", features = ["media"] }
 bytemuck = { version = "1", features = ["derive"] }
 
 
-llama-cpp-2 = { git = "https://github.com/hongkongkiwi/llama-cpp-rs-2", branch = "feature/mtmd-build-fix", features = ["mtmd"] }
+llama-cpp-2 = { git= "https://github.com/utilityai/llama-cpp-rs", branch = "main", features = ["mtmd"] }
 image = { version = "0.25", features = ["png", "jpeg", "webp"] }
 ndarray = "0.16"
-tokenizers = "0.20"
-
+tokenizers = "0.22.1"
+esaxx-rs = "0.1.10"
 # HTTP client for model downloads
 reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
