@@ -3,8 +3,25 @@ use cuneus::compute::{ BindGroupLayoutType, create_bind_group_layout, create_ext
 use std::path::PathBuf;
 use std::time::Instant;
 use cuneus::prelude::*;
+use log::{info, warn, error, debug};
 
 mod fastvlm;
+
+// Analysis request type for future llama-cpp-2 integration
+#[allow(dead_code)]
+#[derive(Debug)]
+enum AnalysisRequest {
+    SingleFrame {
+        image_data: Vec<u8>,
+        width: u32,
+        height: u32,
+        prompt: String,
+    },
+    VideoChunk {
+        frames: Vec<(Vec<u8>, u32, u32)>,
+        prompt: String,
+    },
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -45,9 +62,22 @@ struct Calcarine {
     llm_resolution_scale: f32,
     llm_processing: bool,
     
-    analysis_sender: Option<std::sync::mpsc::Sender<(Vec<u8>, u32, u32, String)>>,
-    result_receiver: Option<std::sync::mpsc::Receiver<fastvlm::FastVLMAnalysisResult>>,
-    last_analysis_result: Option<fastvlm::FastVLMAnalysisResult>,
+    analysis_sender: Option<std::sync::mpsc::Sender<AnalysisRequest>>,
+    result_receiver: Option<std::sync::mpsc::Receiver<fastvlm::LlamaMultimodalAnalysisResult>>,
+    last_analysis_result: Option<fastvlm::LlamaMultimodalAnalysisResult>,
+    
+    video_mode_enabled: bool,
+    video_chunk_interval: f32, // seconds between video chunks
+    last_video_chunk_time: Instant,
+    video_frame_buffer: Vec<(Vec<u8>, u32, u32)>, // Buffer for video frames
+    
+    // Model downloading state
+    downloading_models: bool,
+    
+    // Frame capture retry tracking
+    capture_retry_count: u32,
+    capture_retry_start: Option<Instant>,
+    
 }
 
 impl Calcarine {
@@ -257,9 +287,204 @@ impl Calcarine {
         let (tx, rx) = std::sync::mpsc::channel();
         
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
+            // Ignore send errors - the receiver might be dropped if we timed out
+            debug!("GPU buffer mapping callback triggered");
+            match tx.send(result) {
+                Ok(_) => {
+                    debug!("GPU buffer result sent successfully");
+                },
+                Err(_) => {
+                    debug!("GPU buffer receiver was dropped (timeout expected)");
+                }
+            }
         });
         
+        // Use a short blocking wait to give the GPU operation time to complete
+        debug!("Polling GPU device with short wait...");
+        core.device.poll(wgpu::Maintain::Wait);
+        
+        // Try to receive with a very short timeout
+        debug!("Waiting briefly for GPU buffer results...");
+        match rx.recv_timeout(std::time::Duration::from_millis(1)) {
+            Ok(result) => {
+                debug!("GPU buffer operation completed successfully!");
+                result.unwrap();
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                debug!("GPU buffer operation timed out");
+                return Err(wgpu::SurfaceError::Timeout);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                warn!("GPU buffer channel disconnected");
+                return Err(wgpu::SurfaceError::Lost);
+            }
+        }
+        
+        let padded_data = buffer_slice.get_mapped_range().to_vec();
+        let mut unpadded_data = Vec::with_capacity((width * height * 4) as usize);
+        
+        for chunk in padded_data.chunks(padded_bytes_per_row as usize) {
+            unpadded_data.extend_from_slice(&chunk[..unpadded_bytes_per_row as usize]);
+        }
+        
+        Ok(unpadded_data)
+    }
+    
+    fn capture_frame_sync(&mut self, core: &Core, time: f32) -> Result<Vec<u8>, wgpu::SurfaceError> {
+        // Synchronous version for fallback
+        info!("Using synchronous frame capture as fallback");
+        let width = ((core.size.width as f32 * self.llm_resolution_scale) as u32).max(320);
+        let height = ((core.size.height as f32 * self.llm_resolution_scale) as u32).max(240);
+        let (capture_texture, output_buffer) = self.base.create_capture_texture(
+            &core.device,
+            width,
+            height
+        );
+        
+        let align = 256;
+        let unpadded_bytes_per_row = width * 4;
+        let padding = (align - unpadded_bytes_per_row % align) % align;
+        let padded_bytes_per_row = unpadded_bytes_per_row + padding;
+        
+        let capture_view = capture_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = core.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Sync Capture Encoder"),
+        });
+        
+        if self.capture_output_texture.is_none() {
+            self.capture_output_texture = Some(cuneus::compute::create_output_texture(
+                &core.device,
+                width,
+                height,
+                wgpu::TextureFormat::Rgba16Float,
+                &self.base.texture_bind_group_layout,
+                wgpu::AddressMode::ClampToEdge,
+                wgpu::FilterMode::Linear,
+                "Sync Capture Output",
+            ));
+        }
+        
+        let capture_output = self.capture_output_texture.as_ref().unwrap();
+        
+        let capture_compute_bind_group = if self.base.using_video_texture {
+            if let Some(ref video_manager) = self.base.video_texture_manager {
+                let texture_manager = video_manager.texture_manager();
+                cuneus::compute::create_external_texture_bind_group(
+                    &core.device,
+                    &self.compute_bind_group_layout,
+                    &texture_manager.view,
+                    &texture_manager.sampler,
+                    &capture_output.view,
+                    "Sync Capture Compute",
+                )
+            } else {
+                return Err(wgpu::SurfaceError::Lost);
+            }
+        } else if self.base.using_webcam_texture {
+            if let Some(ref webcam_manager) = self.base.webcam_texture_manager {
+                let texture_manager = webcam_manager.texture_manager();
+                cuneus::compute::create_external_texture_bind_group(
+                    &core.device,
+                    &self.compute_bind_group_layout,
+                    &texture_manager.view,
+                    &texture_manager.sampler,
+                    &capture_output.view,
+                    "Sync Capture Compute",
+                )
+            } else {
+                return Err(wgpu::SurfaceError::Lost);
+            }
+        } else if let Some(ref texture_manager) = self.base.texture_manager {
+            cuneus::compute::create_external_texture_bind_group(
+                &core.device,
+                &self.compute_bind_group_layout,
+                &texture_manager.view,
+                &texture_manager.sampler,
+                &capture_output.view,
+                "Sync Capture Compute",
+            )
+        } else {
+            return Err(wgpu::SurfaceError::Lost);
+        };
+        
+        let capture_time_uniform = UniformBinding::new(
+            &core.device,
+            "Sync Capture Time Uniform",
+            cuneus::compute::ComputeTimeUniform {
+                time,
+                delta: 1.0/60.0,
+                frame: self.frame_count,
+                _padding: 0,
+            },
+            &self.time_bind_group_layout,
+            0,
+        );
+        capture_time_uniform.update(&core.queue);
+        
+        let compute_width = width.div_ceil(16);
+        let compute_height = height.div_ceil(16);
+        
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Sync Capture Process Texture Pass"),
+                timestamp_writes: None,
+            });
+            
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &capture_time_uniform.bind_group, &[]);
+            compute_pass.set_bind_group(1, &self.params_uniform.bind_group, &[]);
+            compute_pass.set_bind_group(2, &capture_compute_bind_group, &[]);
+            
+            compute_pass.dispatch_workgroups(compute_width, compute_height, 1);
+        }
+        
+        {
+            let mut render_pass = cuneus::Renderer::begin_render_pass(
+                &mut encoder,
+                &capture_view,
+                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                Some("Sync Capture Pass"),
+            );
+            
+            render_pass.set_pipeline(&self.base.renderer.render_pipeline);
+            render_pass.set_vertex_buffer(0, self.base.renderer.vertex_buffer.slice(..));
+            render_pass.set_bind_group(0, &capture_output.bind_group, &[]);
+            
+            render_pass.draw(0..4, 0..1);
+        }
+        
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &capture_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &output_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        
+        core.queue.submit(Some(encoder.finish()));
+        
+        let buffer_slice = output_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        
+        // Use blocking wait for synchronous version
         core.device.poll(wgpu::Maintain::Wait);
         rx.recv().unwrap().unwrap();
         
@@ -366,81 +591,41 @@ impl Calcarine {
         Ok(unpadded_data)
     }
     
-    fn init_fastvlm() -> Option<fastvlm::FastVLM> {
-        println!("🔍 Searching for FastVLM models...");
-        tracing::info!("🔍 Searching for FastVLM models...");
+    fn init_llama_multimodal() -> Option<fastvlm::LlamaMultimodal> {
+        info!("Setting up Llama-cpp-2 multimodal...");
         
-        // Get the system-standard model directory
-        let system_model_dir = fastvlm::download::get_default_model_dir();
-        
-        let possible_paths = [
-            system_model_dir.as_path(),
-            std::path::Path::new("data/fastvlm"),
-            std::path::Path::new("../data/fastvlm"),
-            std::path::Path::new("../../data/fastvlm"),
-            std::path::Path::new("."),
-        ];
-        
-        // First check if models exist in any of the possible paths
-        let existing_dir = possible_paths.iter()
-            .find(|path| {
-                let exists = path.exists() && 
-                    path.join("tokenizer.json").exists() &&
-                    path.join("vision_encoder.onnx").exists() &&
-                    path.join("embed_tokens.onnx").exists() &&
-                    path.join("decoder_model_merged.onnx").exists();
+        match fastvlm::llama_download::setup_model_config() {
+            Ok((model_path, mmproj_path)) => {
+                info!("Found models:");
+                info!("  Model: {}", model_path);
+                info!("  Projection: {}", mmproj_path);
                 
-                println!("🔍 Checking path {:?}: {}", path, if exists { "✅ Found all models" } else { "❌ Missing models" });
-                tracing::info!("🔍 Checking path {:?}: {}", path, if exists { "✅ Found all models" } else { "❌ Missing models" });
-                exists
-            })
-            .copied();
-            
-        let data_dir = if let Some(dir) = existing_dir {
-            tracing::info!("Found FastVLM data directory at: {:?}", dir);
-            dir.to_path_buf()
-        } else {
-            println!("📥 FastVLM models not found, attempting automatic download...");
-            tracing::info!("FastVLM models not found, attempting automatic download...");
-            let download_dir = fastvlm::download::get_default_model_dir();
-            let absolute_path = std::fs::canonicalize(&download_dir).unwrap_or_else(|_| download_dir.clone());
-            println!("📁 Download directory: {:?}", download_dir);
-            println!("📁 Absolute path: {:?}", absolute_path);
-            
-            let rt = tokio::runtime::Runtime::new().ok()?;
-            match rt.block_on(fastvlm::download::download_fastvlm_models(&download_dir)) {
-                Ok(_) => {
-                    let final_absolute_path = std::fs::canonicalize(&download_dir).unwrap_or_else(|_| download_dir.clone());
-                    println!("✅ FastVLM models downloaded successfully to: {:?}", download_dir);
-                    println!("✅ Absolute path: {:?}", final_absolute_path);
-                    tracing::info!("FastVLM models downloaded successfully to: {:?}", download_dir);
-                    download_dir
-                },
-                Err(e) => {
-                    println!("❌ Failed to download FastVLM models: {}", e);
-                    tracing::error!("Failed to download FastVLM models: {}", e);
-                    tracing::warn!("Please manually download models to one of: {:?}", possible_paths);
-                    return None;
-                }
-            }
-        };
-        
-        let config = fastvlm::FastVLMConfig::default();
-        match tokio::runtime::Runtime::new() {
-            Ok(rt) => {
-                match rt.block_on(fastvlm::FastVLM::new(&data_dir, config)) {
-                    Ok(fastvlm) => {
-                        tracing::info!("FastVLM initialized successfully with CoreML acceleration");
-                        Some(fastvlm)
+                let config = fastvlm::LlamaMultimodalConfig {
+                    model_path,
+                    mmproj_path,
+                    max_response_length: 50,
+                    default_prompt: "Describe this image in less than 10 words".to_string(),
+                    n_ctx: 4096,
+                    n_threads: 4,
+                    video_chunk_size: 10,
+                    chunk_overlap_frames: 2,
+                };
+                
+                // Initialize the multimodal system
+                let rt = tokio::runtime::Runtime::new().ok()?;
+                match rt.block_on(fastvlm::LlamaMultimodal::new(config)) {
+                    Ok(llama) => {
+                        info!("Llama-cpp-2 multimodal initialized successfully!");
+                        Some(llama)
                     },
                     Err(e) => {
-                        tracing::error!("Failed to initialize FastVLM: {}", e);
+                        error!("Failed to initialize multimodal system: {}", e);
                         None
                     }
                 }
             },
             Err(e) => {
-                tracing::error!("Failed to create tokio runtime: {}", e);
+                warn!("Model setup failed: {}", e);
                 None
             }
         }
@@ -453,8 +638,8 @@ impl Calcarine {
         
         if let Some(receiver) = &self.result_receiver {
             if let Ok(result) = receiver.try_recv() {
-                println!("🎉 LLM Analysis Result: {}", result.text);
-                println!("⏱️  Processing time: {:.2}s", result.processing_time.as_secs_f32());
+                info!("LLM Analysis Result: {}", result.text);
+                info!("Processing time: {:.2}s", result.processing_time.as_secs_f32());
                 self.last_analysis_result = Some(result);
                 self.llm_processing = false;
             }
@@ -467,17 +652,22 @@ impl Calcarine {
         let should_analyze = self.last_analysis_time.elapsed().as_secs_f32() >= self.analysis_interval_seconds;
         
         if should_analyze {
-            println!("🔍 Starting AI analysis - this won't interrupt your display...");
+            info!("Starting AI analysis - pausing intensive GPU graphics for optimal AI performance...");
             self.last_analysis_time = Instant::now();
             self.llm_processing = true;
+            
             
             let current_time = self.base.controls.get_time(&self.base.start_time);
             
             match self.capture_frame(core, current_time) {
                 Ok(frame_data) => {
+                    // Reset retry tracking on successful capture
+                    self.capture_retry_start = None;
+                    self.capture_retry_count = 0;
+                    
                     let captured_width = ((core.size.width as f32 * self.llm_resolution_scale) as u32).max(320);
                     let captured_height = ((core.size.height as f32 * self.llm_resolution_scale) as u32).max(240);
-                    println!("✅ Frame captured successfully: {}x{} pixels", 
+                    debug!("Frame captured successfully: {}x{} pixels", 
                            captured_width, captured_height);
                     
                     let prompt = if self.llm_prompt.trim().is_empty() {
@@ -486,17 +676,131 @@ impl Calcarine {
                         self.llm_prompt.clone()
                     };
                     
-                    println!("🤖 Processing your image - results will appear shortly...");
+                    info!("Processing your image - results will appear shortly...");
                     
-                    if let Some(sender) = &self.analysis_sender {
-                        if let Err(e) = sender.send((frame_data, captured_width, captured_height, prompt)) {
-                            println!("❌ Analysis request failed: {}", e);
+                    if let Some(_sender) = &self.analysis_sender {
+                        let request = if self.video_mode_enabled {
+                            // Add frame to video buffer
+                            self.video_frame_buffer.push((frame_data, captured_width, captured_height));
+                            
+                            // Check if it's time to process video chunk
+                            let should_process_chunk = self.last_video_chunk_time.elapsed().as_secs_f32() >= self.video_chunk_interval;
+                            
+                            if should_process_chunk && !self.video_frame_buffer.is_empty() {
+                                self.last_video_chunk_time = Instant::now();
+                                let chunk_frames = std::mem::take(&mut self.video_frame_buffer);
+                                let video_prompt = format!("Analyze this video sequence of {} frames: {}", chunk_frames.len(), prompt);
+                                Some(AnalysisRequest::VideoChunk { 
+                                    frames: chunk_frames,
+                                    prompt: video_prompt,
+                                })
+                            } else {
+                                None // Don't send request yet, accumulating frames
+                            }
+                        } else {
+                            // Single frame analysis
+                            Some(AnalysisRequest::SingleFrame {
+                                image_data: frame_data,
+                                width: captured_width,
+                                height: captured_height,
+                                prompt,
+                            })
+                        };
+                        
+                        if let Some(request) = request {
+                            // Send the request to background thread
+                            if let Some(ref sender) = self.analysis_sender {
+                                match sender.send(request) {
+                                    Ok(_) => {
+                                        debug!("Request sent to background MTMD thread");
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to send request to background thread: {}", e);
+                                        self.llm_processing = false;
+                                    }
+                                }
+                            } else {
+                                warn!("No background thread available for processing");
+                                self.llm_processing = false;
+                            }
+                        } else {
+                            // Video mode: frame added to buffer, not processing yet
                             self.llm_processing = false;
                         }
                     }
                 },
+                Err(wgpu::SurfaceError::Timeout) => {
+                    // Track retry attempts and use fallback if needed
+                    if self.capture_retry_start.is_none() {
+                        self.capture_retry_start = Some(Instant::now());
+                        self.capture_retry_count = 0;
+                    }
+                    
+                    self.capture_retry_count += 1;
+                    let elapsed = self.capture_retry_start.unwrap().elapsed();
+                    
+                    const MAX_RETRIES: u32 = 3;
+                    const FALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+                    
+                    if self.capture_retry_count >= MAX_RETRIES || elapsed >= FALLBACK_TIMEOUT {
+                        warn!("Async capture failed after {} retries in {:.2}s, falling back to sync capture", 
+                                self.capture_retry_count, elapsed.as_secs_f32());
+                        
+                        // Reset retry tracking
+                        self.capture_retry_start = None;
+                        self.capture_retry_count = 0;
+                        
+                        // Try synchronous capture as fallback
+                        match self.capture_frame_sync(core, current_time) {
+                            Ok(frame_data) => {
+                                let captured_width = ((core.size.width as f32 * self.llm_resolution_scale) as u32).max(320);
+                                let captured_height = ((core.size.height as f32 * self.llm_resolution_scale) as u32).max(240);
+                                debug!("Sync frame captured successfully: {}x{} pixels", 
+                                       captured_width, captured_height);
+                                
+                                let prompt = if self.llm_prompt.trim().is_empty() {
+                                    "Describe this image in 10 words or less.".to_string()
+                                } else {
+                                    self.llm_prompt.clone()
+                                };
+                                
+                                // Send request to background thread
+                                if let Some(ref sender) = self.analysis_sender {
+                                    let request = AnalysisRequest::SingleFrame { 
+                                        image_data: frame_data,
+                                        width: captured_width,
+                                        height: captured_height,
+                                        prompt,
+                                    };
+                                    
+                                    match sender.send(request) {
+                                        Ok(_) => {
+                                            debug!("Sync request sent to background MTMD thread");
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to send sync request to background thread: {}", e);
+                                            self.llm_processing = false;
+                                        }
+                                    }
+                                } else {
+                                    warn!("No background thread available for processing");
+                                    self.llm_processing = false;
+                                }
+                            }
+                            Err(e) => {
+                                error!("Sync capture also failed: {:?}", e);
+                                self.llm_processing = false;
+                            }
+                        }
+                    } else {
+                        // Continue retrying
+                        debug!("Frame capture in progress, retry {}/{} ({:.2}s)...", 
+                                self.capture_retry_count, MAX_RETRIES, elapsed.as_secs_f32());
+                        // Don't set llm_processing = false, keep it active to retry
+                    }
+                },
                 Err(e) => {
-                    println!("❌ Failed to capture frame for analysis: {:?}", e);
+                    error!("Failed to capture frame for analysis: {:?}", e);
                     self.llm_processing = false;
                 }
             }
@@ -673,38 +977,93 @@ impl ShaderManager for Calcarine {
             label: Some("Compute Bind Group"),
         });
         
-        // Initialize FastVLM (may be None if models not available)
-        println!("🔧 Initializing FastVLM...");
-        let mut fastvlm = Self::init_fastvlm();
-        let llm_enabled = fastvlm.is_some();
+        // Initialize Llama-cpp-2 multimodal (may be None if models not available)
+        info!("Initializing Llama-cpp-2 multimodal...");
+        let llama_multimodal = Self::init_llama_multimodal();
+        let llm_enabled = llama_multimodal.is_some();
         
-        let (analysis_sender, result_receiver) = if let Some(mut fastvlm_instance) = fastvlm.take() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let (result_tx, result_rx) = std::sync::mpsc::channel();
+        // Set up background thread for multimodal processing  
+        let (analysis_sender, result_receiver) = if let Some(llama_instance) = llama_multimodal {
+            let mut llama_instance = llama_instance;
+            info!("Setting up analysis pipeline with background thread...");
+            let (request_tx, request_rx) = std::sync::mpsc::channel::<AnalysisRequest>();
+            let (result_tx, result_rx) = std::sync::mpsc::channel::<fastvlm::LlamaMultimodalAnalysisResult>();
             
+            // Spawn background thread for MTMD processing
             std::thread::spawn(move || {
-                for (image_data, width, height, prompt) in rx {
-                    match fastvlm_instance.analyze_frame_sync(image_data, width, height, Some(prompt)) {
-                        Ok(result) => {
-                            if result_tx.send(result).is_err() {
-                                break;
+                info!("Background MTMD processing thread started");
+                while let Ok(request) = request_rx.recv() {
+                    debug!("Background thread received request: {:?}", 
+                             match &request {
+                                 AnalysisRequest::SingleFrame { width, height, .. } => 
+                                     format!("SingleFrame({}x{})", width, height),
+                                 AnalysisRequest::VideoChunk { frames, .. } => 
+                                     format!("VideoChunk({} frames)", frames.len()),
+                             });
+                    match request {
+                        AnalysisRequest::SingleFrame { image_data, width, height, prompt } => {
+                            info!("Processing frame with REAL llama-cpp-2 multimodal in background...");
+                            match llama_instance.analyze_frame_sync(image_data, width, height, Some(prompt)) {
+                                Ok(result) => {
+                                    info!("REAL Multimodal analysis completed: {}", result.text);
+                                    let _ = result_tx.send(result);
+                                }
+                                Err(e) => {
+                                    error!("REAL Multimodal analysis failed: {}", e);
+                                    let error_result = fastvlm::LlamaMultimodalAnalysisResult {
+                                        text: format!("Analysis error: {}", e),
+                                        timestamp: std::time::Instant::now(),
+                                        processing_time: std::time::Duration::from_millis(100),
+                                    };
+                                    let _ = result_tx.send(error_result);
+                                }
                             }
                         }
-                        Err(e) => {
-                            println!("❌ Background FastVLM analysis failed: {}", e);
+                        AnalysisRequest::VideoChunk { frames, prompt } => {
+                            info!("Processing video chunk with {} frames using REAL multimodal in background...", frames.len());
+                            
+                            // Add all frames to the video buffer in the multimodal instance
+                            for (frame_data, _width, _height) in &frames {
+                                llama_instance.add_video_frame(frame_data.clone());
+                            }
+                            
+                            // For now, analyze the first frame with video context
+                            if let Some((first_frame, width, height)) = frames.first() {
+                                let video_prompt = format!("This is a video sequence with {} frames. {}. Describe the movement, action, or changes you see.", frames.len(), prompt);
+                                match llama_instance.analyze_frame_sync(first_frame.clone(), *width, *height, Some(video_prompt)) {
+                                    Ok(result) => {
+                                        info!("REAL Video chunk analysis completed: {}", result.text);
+                                        // Get video status for debugging
+                                        let (buffer_size, chunk_count) = llama_instance.get_video_status();
+                                        debug!("Video buffer: {} frames, {} chunks processed", buffer_size, chunk_count);
+                                        let _ = result_tx.send(result);
+                                    }
+                                    Err(e) => {
+                                        error!("REAL Video chunk analysis failed: {}", e);
+                                        let error_result = fastvlm::LlamaMultimodalAnalysisResult {
+                                            text: format!("Video chunk analysis error: {}", e),
+                                            timestamp: std::time::Instant::now(),
+                                            processing_time: std::time::Duration::from_millis(100),
+                                        };
+                                        let _ = result_tx.send(error_result);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
+                info!("Background MTMD processing thread terminated");
             });
-            (Some(tx), Some(result_rx))
+            
+            (Some(request_tx), Some(result_rx))
         } else {
             (None, None)
         };
         
         if llm_enabled {
-            println!("✅ FastVLM initialized successfully with CoreML GPU acceleration!");
+            info!("Llama-cpp-2 multimodal initialized successfully!");
         } else {
-            println!("⚠️  FastVLM initialization failed - LLM features disabled");
+            warn!("Multimodal system initialization failed - AI features disabled");
         }
         
         let mut result = Self {
@@ -729,6 +1088,19 @@ impl ShaderManager for Calcarine {
             result_receiver,
             last_analysis_result: None,
             capture_output_texture: None,
+            
+            // New video analysis fields
+            video_mode_enabled: false,
+            video_chunk_interval: 5.0, // 5 seconds between video chunks
+            last_video_chunk_time: Instant::now(),
+            video_frame_buffer: Vec::new(),
+            
+            // Model downloading
+            downloading_models: false,
+            
+            // Frame capture retry tracking
+            capture_retry_count: 0,
+            capture_retry_start: None,
         };
         
         result.recreate_compute_resources(core);
@@ -738,7 +1110,7 @@ impl ShaderManager for Calcarine {
     
     fn update(&mut self, core: &Core) {
         if let Some(new_shader) = self.hot_reload.reload_compute_shader() {
-            println!("Reloading compute shader at time: {:.2}s", self.base.start_time.elapsed().as_secs_f32());
+            info!("Reloading compute shader at time: {:.2}s", self.base.start_time.elapsed().as_secs_f32());
             
                 let compute_pipeline_layout = core.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Updated Compute Pipeline Layout"),
@@ -784,7 +1156,7 @@ impl ShaderManager for Calcarine {
 
     
     fn resize(&mut self, core: &Core) {
-        println!("Resizing to {:?}", core.size);
+        debug!("Resizing to {:?}", core.size);
         self.recreate_compute_resources(core);
     }
     
@@ -875,7 +1247,7 @@ impl ShaderManager for Calcarine {
                         
                         ui.separator();
                         
-                        egui::CollapsingHeader::new("🤖 FastVLM AI Analysis Settings")
+                        egui::CollapsingHeader::new("🤖 Multimodal AI Analysis (Llama-cpp-2)")
                             .default_open(false)
                             .show(ui, |ui| {
                                 if self.analysis_sender.is_some() {
@@ -891,13 +1263,32 @@ impl ShaderManager for Calcarine {
                                         }
                                     });
                                     
-                                    ui.add(egui::Slider::new(&mut self.analysis_interval_seconds, 3.0..=30.0)
-                                        .text("Analysis Interval (seconds)"));
+                                    // NEW: Analysis Mode Selection
+                                    ui.horizontal(|ui| {
+                                        ui.label("Mode:");
+                                        ui.radio_value(&mut self.video_mode_enabled, false, "📷 Single Frame");
+                                        ui.radio_value(&mut self.video_mode_enabled, true, "🎬 Video Chunks");
+                                    });
+                                    
+                                    if self.video_mode_enabled {
+                                        ui.add(egui::Slider::new(&mut self.video_chunk_interval, 2.0..=15.0)
+                                            .text("Video Chunk Interval (seconds)"));
+                                        
+                                        let (buffered_frames, _chunk_count) = (self.video_frame_buffer.len(), 0); // We'd need to track chunk count
+                                        ui.label(format!("📹 Buffered frames: {}", buffered_frames));
+                                        
+                                        if ui.button("🗑️ Clear Video Buffer").clicked() {
+                                            self.video_frame_buffer.clear();
+                                            self.last_video_chunk_time = Instant::now();
+                                        }
+                                    } else {
+                                        ui.add(egui::Slider::new(&mut self.analysis_interval_seconds, 3.0..=30.0)
+                                            .text("Analysis Interval (seconds)"));
+                                    }
                                     
                                     ui.add(egui::Slider::new(&mut self.llm_resolution_scale, 0.25..=1.0)
                                         .text("Resolution Scale (lower = faster)")
                                         .show_value(true));
-                                    
                                     
                                     ui.horizontal(|ui| {
                                         ui.label("Custom Prompt:");
@@ -906,16 +1297,45 @@ impl ShaderManager for Calcarine {
                                     
                                     ui.add_space(5.0);
                                     if ui.button("🔍 Analyze Now").clicked() && self.llm_enabled && !self.llm_processing {
-                                        println!("🎯 Manual analysis triggered");
+                                        info!("Manual analysis triggered");
                                         self.last_analysis_time = Instant::now() - std::time::Duration::from_secs(self.analysis_interval_seconds as u64);
                                     }
                                 } else {
-                                    ui.heading("⚠️ FastVLM Unavailable");
-                                    ui.label("Models not found or failed to load");
-                                    ui.label("Expected: tokenizer.json, vision_encoder.onnx,");
-                                    ui.label("embed_tokens.onnx, decoder_model_merged.onnx");
+                                    ui.heading("⚠️ Multimodal AI Unavailable");
+                                    ui.label("Llama-cpp-2 models not found or failed to load");
+                                    ui.label("Required: .gguf model file + mmproj-*.gguf");
                                     ui.add_space(5.0);
-                                    ui.label("🔄 Restart the app to retry initialization");
+                                    
+                                    let model_dir = fastvlm::llama_download::get_default_model_dir();
+                                    ui.label(format!("📂 Expected location: {}", model_dir.display()));
+                                    ui.add_space(5.0);
+                                    
+                                    if self.downloading_models {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label("📥 Downloading models... (check console for progress)");
+                                        });
+                                    } else {
+                                        if ui.button("📥 Download Models Automatically").clicked() {
+                                            info!("Starting automatic model download...");
+                                            self.downloading_models = true;
+                                            
+                                            // Start download in background thread
+                                            std::thread::spawn(|| {
+                                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                                rt.block_on(async {
+                                                    if let Err(e) = fastvlm::llama_download::download_models().await {
+                                                        error!("Download failed: {}", e);
+                                                    } else {
+                                                        info!("Download completed! Please restart the application.");
+                                                    }
+                                                });
+                                            });
+                                        }
+                                        
+                                        ui.label("📖 Or check console for manual download instructions");
+                                        ui.label("🔄 Restart the app after downloading models");
+                                    }
                                 }
                             });
                         
@@ -1073,7 +1493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     env_logger::init();
     
-    println!("🚀 Starting Calcarine with FastVLM integration");
+    info!("Starting Calcarine with FastVLM integration");
     
     // On Windows, hide the console after downloads are complete
     #[cfg(target_os = "windows")]

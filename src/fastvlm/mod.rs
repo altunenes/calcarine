@@ -1,5 +1,7 @@
-pub mod fastvlm_image_process;
-pub mod fastvlm;
-pub mod download;
+// New llama-cpp-2 based modules
+pub mod llama_multimodal;
+pub mod llama_image_process;
+pub mod llama_download;
 
-pub use fastvlm::{FastVLM, FastVLMConfig, FastVLMAnalysisResult};
+// Export new types
+pub use llama_multimodal::{LlamaMultimodal, LlamaMultimodalConfig, LlamaMultimodalAnalysisResult};

@@ -3,32 +3,42 @@ name = "calcarine"
 version = "0.1.0"
 edition = "2024"
 
+[[example]]
+name = "test_mtmd"
+path = "examples/test_mtmd.rs"
+
 [dependencies]
 # Core dependencies
 cuneus = { version = "0.2.2", features = ["media"] }
 bytemuck = { version = "1", features = ["derive"] }
 
-# AI/ML dependencies
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-ndarray = "0.16"
-image = { version = "0.25", features = ["png", "jpeg", "webp"] }
 
-# Async and error handling
-tokio = { version = "1", features = ["full"] }
-anyhow = "1.0"
+llama-cpp-2 = { git= "https://github.com/utilityai/llama-cpp-rs", branch = "main", features = ["mtmd"] }
+image = { version = "0.25", features = ["png", "jpeg", "webp"] }
+ndarray = "0.16"
+tokenizers = "0.22.1"
+esaxx-rs = "0.1.10"
+# HTTP client for model downloads
 reqwest = { version = "0.12", features = ["stream"] }
 futures-util = "0.3"
 
-# System directories
+# Async and error handling"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+
+# System directories  
 dirs = "5.0"
 
 # Logging
 tracing = "0.1"
 env_logger = "0.11"
+log = "0.4.27"
 
-# Platform-specific ONNX Runtime execution providers
-[target.'cfg(target_os = "macos")'.dependencies]
-ort = { version = "2.0.0-rc.10", features = ["coreml"] }
-
-[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
-ort = { version = "2.0.0-rc.10", features = ["cuda"] }
+# Platform-specific GPU acceleration
+[features]
+default = ["vulkan", "mtmd"]
+cuda = ["llama-cpp-2/cuda"]
+metal = ["llama-cpp-2/metal"] 
+vulkan = ["llama-cpp-2/vulkan"]
+native = ["llama-cpp-2/native"]
+mtmd = ["llama-cpp-2/mtmd"]
